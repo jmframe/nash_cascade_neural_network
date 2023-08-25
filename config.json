@@ -1,0 +1,11 @@
+{
+  "initial_head_in_buckets": 100, 
+  "bpl": [
+      1,
+      2,
+      3,
+      2,
+      1
+  ],
+ "range_of_alpha_values": [0.001, 0.01]
+}
