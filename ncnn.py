@@ -28,6 +28,7 @@ class NashCascadeNeuralNetwork:
         # GET VALUES FROM CONFIGURATION FILE.                      #
         self.config_from_json()
         self.initialize_up_bucket_network()
+        self.precip_into_network_at_update = 0
 
     #________________________________________________________
     def config_from_json(self):
@@ -37,7 +38,8 @@ class NashCascadeNeuralNetwork:
         # ___________________________________________________
         ## MANDATORY CONFIGURATIONS
         self.bpl               = cfg_loaded['bpl']
-        self.range_of_alpha_values = cfg_loaded['range_of_alpha_values']
+        self.n_network_layers = len(self.bpl)
+        self.range_of_theta_values = cfg_loaded['range_of_theta_values']
         self.initial_head_in_buckets = cfg_loaded['initial_head_in_buckets']
 
 
@@ -87,9 +89,13 @@ class NashCascadeNeuralNetwork:
 
             bucket_network_dict[ilayer]["s_q"] = [[0 for i in range(n_spigots)] for _ in range(n_buckets)]
 
-            alpha1, alpha2 = self.range_of_alpha_values
+            theta1, theta2 = self.range_of_theta_values
 
-            bucket_network_dict[ilayer]["theta"] = [[np.random.uniform(alpha1, alpha2) for i in range(n_spigots)] for _ in range(n_buckets)]
+            # We want practically free flowing in the beginning and end of the network.
+            if ilayer in [0, self.n_network_layers-1]:
+                bucket_network_dict[ilayer]["theta"] = [[theta2 for i in range(n_spigots)] for _ in range(n_buckets)]
+            else:
+                bucket_network_dict[ilayer]["theta"] = [[np.random.uniform(theta1, theta2) for i in range(n_spigots)] for _ in range(n_buckets)]
 
         self.network = bucket_network_dict
     
@@ -113,23 +119,28 @@ class NashCascadeNeuralNetwork:
     #### NCNN #### NCNN #### NCNN #### NCNN #### NCNN #### NCNN #### NCNN ####
     # -----------------------------------------------------------------------#
     def solve_layer_inflows(self, ilayer):
+        precip_inflow_per_layer = self.precip_into_network_at_update / self.n_network_layers
         if ilayer == 0:
-            inflows = [0]
+            inflows = [precip_inflow_per_layer]
             return inflows
         number_of_ilayer_buckets = len(self.network[ilayer]["s_q"])
         number_of_upstream_buckets = len(self.network[ilayer-1]["s_q"])
         inflows = []
         for ibucket in range(number_of_ilayer_buckets):
+            precip_inflow_per_bucket = precip_inflow_per_layer/number_of_ilayer_buckets
             i_bucket_q = 0
             for i_up_bucket in range(number_of_upstream_buckets):
                 i_bucket_q += self.network[ilayer-1]["s_q"][i_up_bucket][ibucket]
-            inflows.append(i_bucket_q)
+            inflows.append(i_bucket_q + precip_inflow_per_bucket)
         return inflows
 
     # -----------------------------------------------------------------------#
     #### NCNN #### NCNN #### NCNN #### NCNN #### NCNN #### NCNN #### NCNN ####
     # -----------------------------------------------------------------------#
     def update_network(self):
+        """ Updates all the buckets with the inflow from other buckets, outflow and input from precip
+        """
+
         for ilayer in list(self.network.keys()):
             inflows = self.solve_layer_inflows(ilayer)
             for ibucket in range(len(self.network[ilayer]["H"])):
@@ -140,13 +151,15 @@ class NashCascadeNeuralNetwork:
                 H, s_q = self.solve_single_bucket(H, S, theta, single_bucket_inflow)
                 self.network[ilayer]["H"][ibucket] = H
                 self.network[ilayer]["s_q"][ibucket] = s_q
-        network_outflow = self.network[list(self.network.keys())[-1]]["s_q"][0]
+        network_outflow = np.sum(self.network[list(self.network.keys())[-1]]["s_q"])
         self.network_outflow = network_outflow
 
     # -----------------------------------------------------------------------#
     #### NCNN #### NCNN #### NCNN #### NCNN #### NCNN #### NCNN #### NCNN ####
     # -----------------------------------------------------------------------#
     def summarize_network(self):
+        """ Gets some summary of each layer of the network, mean and sum
+        """
         mean_H_per_layer = []
         sum_H_per_layer = []
         for i in list(self.network.keys()):
@@ -154,3 +167,24 @@ class NashCascadeNeuralNetwork:
             sum_H_per_layer.append(np.sum(self.network[i]["H"]))
         self.mean_H_per_layer = mean_H_per_layer
         self.sum_H_per_layer = sum_H_per_layer
+
+    # -----------------------------------------------------------------------#
+    #### NCNN #### NCNN #### NCNN #### NCNN #### NCNN #### NCNN #### NCNN ####
+    # -----------------------------------------------------------------------#
+    def set_value(self, name,  src):
+        """Specify a new value for a model variable.
+
+        This is the setter for the model, used to change the model's
+        current state. It accepts, through *src*, a new value for a
+        model variable, with the type, size and rank of *src*
+        dependent on the variable.
+
+        Parameters
+        ----------
+        name : str
+            An input or output variable name, a CSDMS Standard Name.
+        src : array_like
+            The new value for the specified variable.
+        """
+        if name == "atmosphere_water__liquid_equivalent_precipitation_rate":
+            self.precip_into_network_at_update = np.sum(src)
