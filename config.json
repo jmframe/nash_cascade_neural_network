@@ -1,13 +1,14 @@
 {
-  "initial_head_in_buckets": 10, 
+  "initial_head_in_buckets": 5, 
   "bpl": [
       1,
+      7,
+      6,
       5,
-      10,
+      4,
       5,
-      10,
-      5,
-      10
+      6,
+      7
   ],
- "range_of_theta_values": [0.001, 0.01]
+ "range_of_theta_values": [0.01, 0.1]
 }
