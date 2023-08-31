@@ -9,10 +9,11 @@
 # Then a function that loops through and moves the water to the downstream buckets
 import torch
 import json
+import torch.nn as nn
 
 G = 9.81
 
-class NashCascadeNeuralNetwork:
+class NashCascadeNeuralNetwork(nn.Module):
 
     def __init__(self, cfg_file=None, verbose=False):
         self.cfg_file = cfg_file
@@ -41,7 +42,9 @@ class NashCascadeNeuralNetwork:
         self.n_network_layers = len(self.bpl)
         self.range_of_theta_values = cfg_loaded['range_of_theta_values']
         self.initial_head_in_buckets = cfg_loaded['initial_head_in_buckets']
-
+        if 'seed' in cfg_loaded.keys():
+            torch.cuda.manual_seed(cfg_loaded['seed'])
+            torch.manual_seed(cfg_loaded['seed'])
 
     # -----------------------------------------------------------------------#
     #### NCNN #### NCNN #### NCNN #### NCNN #### NCNN #### NCNN #### NCNN ####
@@ -74,43 +77,53 @@ class NashCascadeNeuralNetwork:
 
         for ilayer, n_buckets in enumerate(self.bpl):
 
-            if ilayer < self.n_network_layers - 1:
-                n_spigots = self.bpl[ilayer+1]
-            else:
-                n_spigots = 1
+            n_spigots = self.get_n_spigots_in_layer_buckets(ilayer)
 
             spigots = [self.get_initial_parameters_of_one_bucket(n_spigots) for _ in range(n_buckets)]
             bucket_network_dict[ilayer]["S"] = spigots
 
-            H0_tensor = torch.tensor(self.initial_head_in_buckets, dtype=torch.float32, requires_grad=True)
-            bucket_network_dict[ilayer]["H"] = H0_tensor.repeat(n_buckets)
+            # H0_tensor = torch.tensor(self.initial_head_in_buckets, dtype=torch.float32, requires_grad=True)
+            # bucket_network_dict[ilayer]["H"] = H0_tensor.repeat(n_buckets)
 
             zeros_tensor = torch.zeros(n_buckets, n_spigots, requires_grad=True)
             bucket_network_dict[ilayer]["s_q"] = zeros_tensor
 
-            theta1, theta2 = self.range_of_theta_values
-            if ilayer in [0, self.n_network_layers-1]:
-                bucket_network_dict[ilayer]["theta"] = torch.full((n_buckets, n_spigots), theta2, requires_grad=True)
-            else:
-                bucket_network_dict[ilayer]["theta"] = torch.rand(n_buckets, n_spigots) * (theta2 - theta1) + theta1
-                bucket_network_dict[ilayer]["theta"].requires_grad_()
+            self.initialize_theta_values()
+
+            # bucket_network_dict[ilayer]["theta"] = torch.rand(n_buckets, n_spigots) * (theta2 - theta1) + theta1
+
+            # bucket_network_dict[ilayer]["theta"].requires_grad_()
 
         self.network = bucket_network_dict
+        self.initialize_bucket_head_level()
     
     # -----------------------------------------------------------------------#
     #### NCNN #### NCNN #### NCNN #### NCNN #### NCNN #### NCNN #### NCNN ####
     # -----------------------------------------------------------------------#
     def solve_single_bucket(self, H, S, theta, bucket_inflow=0):
+
         H = H + bucket_inflow
+        H_effective = H
         s_q = []
-        for S_i, theta_i in zip(S, theta):
+
+        for i, (S_i, theta_i) in enumerate(zip(S, theta)):
             sp_h, sp_a = S_i
-            h = torch.max(torch.tensor(0.0), H - sp_h)
+
+            # Here we don't want to use the full H, but we actually want to integrate from H_(t-1) to H_t
+            # But we can't know H_t unless we run the calculation.
+            # So unless we iterrate, we can't really solve this.
+            h = torch.max(torch.tensor(0.0), H_effective - sp_h)
             v = theta_i * torch.sqrt(2 * self.G * h)
             flow_out = v * sp_a
             s_q.append(flow_out)
+
+            # But for the lower spigots, we can simplify to calculate v as a function of half the head lost from previous spigots
+            H_effective = H - torch.sum(torch.stack(s_q)) / 2
+
         Q = torch.sum(torch.stack(s_q))
+        # Then we need to subtract out the total lost head
         H = H - Q
+
         return H, s_q
 
     # -----------------------------------------------------------------------#
@@ -152,9 +165,13 @@ class NashCascadeNeuralNetwork:
             for ibucket in range(len(self.network[ilayer]["H"])):
                 H = self.network[ilayer]["H"][ibucket]
                 S = self.network[ilayer]["S"][ibucket]
-                theta = self.network[ilayer]["theta"][ibucket]
+
+#                theta = self.network[ilayer]["theta"][ibucket]
+                theta = self.theta[ilayer][ibucket]
+
                 single_bucket_inflow = inflows[ibucket]
                 H, s_q = self.solve_single_bucket(H, S, theta, single_bucket_inflow)
+
                 self.network[ilayer]["H"][ibucket] = H  # Assuming H is a scalar or this assignment is correct
 
                 # Now we have to set s_q, which has been difficult with the tensor situation
@@ -210,3 +227,47 @@ class NashCascadeNeuralNetwork:
         if name == "atmosphere_water__liquid_equivalent_precipitation_rate":
             
             self.precip_into_network_at_update = torch.sum(torch.tensor(src))
+
+    # -----------------------------------------------------------------------#
+    #### NCNN #### NCNN #### NCNN #### NCNN #### NCNN #### NCNN #### NCNN ####
+    # -----------------------------------------------------------------------#
+    def get_n_spigots_in_layer_buckets(self, ilayer):
+        if ilayer < self.n_network_layers - 1:
+            n_spigots = self.bpl[ilayer+1]
+        else:
+            n_spigots = 1
+        return n_spigots
+    
+    # -----------------------------------------------------------------------#
+    #### NCNN #### NCNN #### NCNN #### NCNN #### NCNN #### NCNN #### NCNN ####
+    # -----------------------------------------------------------------------#
+    def initialize_theta_values(self):
+        # Your original network creation
+        network = [[[] for _ in range(self.bpl[ilayer])] for ilayer in range(self.n_network_layers)]
+        for ilayer in range(self.n_network_layers):
+            n_buckets = self.bpl[ilayer]
+            for ibucket in range(n_buckets):
+                n_spigots = self.get_n_spigots_in_layer_buckets(ilayer)
+                for ispigot in range(n_spigots):
+                    random_val = self.range_of_theta_values[0] + (self.range_of_theta_values[1] - self.range_of_theta_values[0]) * torch.rand(1).item()
+                    network[ilayer][ibucket].append(random_val)
+
+        # Determine maximum dimensions for the tensor
+        max_buckets = max(self.bpl)
+        max_spigots = max([self.get_n_spigots_in_layer_buckets(ilayer) for ilayer in range(self.n_network_layers)])
+
+        # Use a list comprehension to create a structure with the correct values and padding
+        tensor_values = [[[network[ilayer][ibucket][ispigot] if (ibucket < len(network[ilayer]) and ispigot < len(network[ilayer][ibucket])) else 0 
+                        for ispigot in range(max_spigots)] for ibucket in range(max_buckets)] for ilayer in range(self.n_network_layers)]
+
+        # Convert the list to a tensor with required gradients
+        tensor_network = torch.tensor(tensor_values, requires_grad=True)
+        self.theta = tensor_network
+
+    # -----------------------------------------------------------------------#
+    #### NCNN #### NCNN #### NCNN #### NCNN #### NCNN #### NCNN #### NCNN ####
+    # -----------------------------------------------------------------------#
+    def initialize_bucket_head_level(self):
+        for ilayer, n_buckets in enumerate(self.bpl):
+            H0_tensor = torch.tensor(self.initial_head_in_buckets, dtype=torch.float32, requires_grad=True)
+            self.network[ilayer]["H"] = H0_tensor.repeat(n_buckets)
