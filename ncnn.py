@@ -8,6 +8,7 @@
 # Need a function that solves this individually at a single buckets
 # Then a function that loops through and moves the water to the downstream buckets
 import torch
+import numpy as np
 import json
 import torch.nn as nn
 
@@ -271,3 +272,58 @@ class NashCascadeNeuralNetwork(nn.Module):
         for ilayer, n_buckets in enumerate(self.bpl):
             H0_tensor = torch.tensor(self.initial_head_in_buckets, dtype=torch.float32, requires_grad=True)
             self.network[ilayer]["H"] = H0_tensor.repeat(n_buckets)
+
+    # -----------------------------------------------------------------------#
+    #### NCNN #### NCNN #### NCNN #### NCNN #### NCNN #### NCNN #### NCNN ####
+    # -----------------------------------------------------------------------#
+    def train_theta_values(self, u, y_true):
+        PRECIP_SVN = "atmosphere_water__liquid_equivalent_precipitation_rate"
+        N_TIMESTEPS = len(u)
+        optim = torch.optim.SGD([self.theta],lr=10e-7)
+        for epoch in range(2):
+
+            y_pred = []
+
+            print(self.sum_H_per_layer)
+            self.initialize_bucket_head_level()
+
+            self.summarize_network()
+            print(self.sum_H_per_layer)
+
+            inital_mass_in_network = np.sum([tensor.item() for tensor in self.sum_H_per_layer])
+
+            for i in range(N_TIMESTEPS):
+
+                ###########################################################################
+                ###########################################################################
+                self.set_value(PRECIP_SVN, np.array(u[i]))
+                self.update_network()
+                y_pred.append(self.network_outflow.item())
+                self.summarize_network()
+                ###########################################################################
+                ###########################################################################
+
+            err = (torch.tensor(y_true, requires_grad=True) - torch.tensor(y_pred, requires_grad=True))
+            loss = err.pow(2.0).mean() # mean squared error
+            loss.backward() # run backpropagation
+
+            optim.step() # update the parameters, just like w -= learning_rate * w.grad
+            optim.zero_grad()
+
+            print(f"loss is: {loss}, theta[0][0][0] is: {self.theta[0][0][0]}")
+
+            ###########################################################################
+            total_mass_precip_in = np.sum(np.array(u))
+            final_mass_in_network = np.sum([tensor.item() for tensor in self.sum_H_per_layer])
+            total_mass_outflow = np.sum(y_pred)
+            print(f"Initial Mass in network at start: {inital_mass_in_network:.1f}")
+            print(f"Final Mass in network: {final_mass_in_network:.1f}")
+            print(f"Total Mass out of network {total_mass_outflow:.1f}")
+            print(f"Total precipitation into network {total_mass_precip_in:.1f}")
+            mass_balance = (inital_mass_in_network + total_mass_precip_in) - (final_mass_in_network + total_mass_outflow)
+            print(f"Final mass balance is {mass_balance:.3f}")
+            mass_balance = (inital_mass_in_network - final_mass_in_network) - (total_mass_outflow - total_mass_precip_in)
+            print(f"Final mass balance is {mass_balance:.3f}")
+
+        self.y_pred = y_pred
+        self.loss = loss
