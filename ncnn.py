@@ -8,7 +8,6 @@
 # Need a function that solves this individually at a single buckets
 # Then a function that loops through and moves the water to the downstream buckets
 import torch
-import numpy as np
 import json
 import torch.nn as nn
 
@@ -25,7 +24,7 @@ class NashCascadeNeuralNetwork(nn.Module):
     # -----------------------------------------------------------------------#
     #### NCNN #### NCNN #### NCNN #### NCNN #### NCNN #### NCNN #### NCNN ####
     # -----------------------------------------------------------------------#
-    def initialize(self,current_time_step=0):
+    def initialize(self, current_time_step=0):
         # ________________________________________________________ #
         # GET VALUES FROM CONFIGURATION FILE.                      #
         self.config_from_json()
@@ -43,9 +42,16 @@ class NashCascadeNeuralNetwork(nn.Module):
         self.n_network_layers = len(self.bpl)
         self.range_of_theta_values = cfg_loaded['range_of_theta_values']
         self.initial_head_in_buckets = cfg_loaded['initial_head_in_buckets']
+        # ___________________________________________________
+        ## OPTIONAL CONFIGURATIONS
+        if 'learning_rate' in cfg_loaded.keys():
+            self.learning_rate = cfg_loaded['learning_rate']
         if 'seed' in cfg_loaded.keys():
             torch.cuda.manual_seed(cfg_loaded['seed'])
             torch.manual_seed(cfg_loaded['seed'])
+        if 'verbose' in cfg_loaded.keys():
+            if cfg_loaded['verbose'] == "True":
+                self.verbose = True
 
     # -----------------------------------------------------------------------#
     #### NCNN #### NCNN #### NCNN #### NCNN #### NCNN #### NCNN #### NCNN ####
@@ -60,7 +66,7 @@ class NashCascadeNeuralNetwork(nn.Module):
         """
         s_parameters = [[torch.rand(1), torch.rand(1)] for _ in range(n_spigots)]
         return s_parameters
-
+    
     # -----------------------------------------------------------------------#
     #### NCNN #### NCNN #### NCNN #### NCNN #### NCNN #### NCNN #### NCNN ####
     # -----------------------------------------------------------------------#
@@ -227,7 +233,11 @@ class NashCascadeNeuralNetwork(nn.Module):
         """
         if name == "atmosphere_water__liquid_equivalent_precipitation_rate":
             
-            self.precip_into_network_at_update = torch.sum(torch.tensor(src))
+            if isinstance(src, torch.Tensor):
+                src_tensor = src.clone().detach()
+            else:
+                src_tensor = torch.tensor(src)
+            self.precip_into_network_at_update = torch.sum(src_tensor)
 
     # -----------------------------------------------------------------------#
     #### NCNN #### NCNN #### NCNN #### NCNN #### NCNN #### NCNN #### NCNN ####
@@ -279,24 +289,22 @@ class NashCascadeNeuralNetwork(nn.Module):
     def train_theta_values(self, u, y_true):
         PRECIP_SVN = "atmosphere_water__liquid_equivalent_precipitation_rate"
         N_TIMESTEPS = len(u)
-        optim = torch.optim.SGD([self.theta],lr=10e-7)
+        optim = torch.optim.SGD([self.theta],lr=self.learning_rate)
         for epoch in range(2):
 
             y_pred = []
 
-            print(self.sum_H_per_layer)
             self.initialize_bucket_head_level()
 
             self.summarize_network()
-            print(self.sum_H_per_layer)
 
-            inital_mass_in_network = np.sum([tensor.item() for tensor in self.sum_H_per_layer])
+            inital_mass_in_network = torch.sum(torch.stack(self.sum_H_per_layer))
 
             for i in range(N_TIMESTEPS):
 
                 ###########################################################################
                 ###########################################################################
-                self.set_value(PRECIP_SVN, np.array(u[i]))
+                self.set_value(PRECIP_SVN, torch.tensor(u[i]))
                 self.update_network()
                 y_pred.append(self.network_outflow.item())
                 self.summarize_network()
@@ -306,6 +314,8 @@ class NashCascadeNeuralNetwork(nn.Module):
             err = (torch.tensor(y_true, requires_grad=True) - torch.tensor(y_pred, requires_grad=True))
             loss = err.pow(2.0).mean() # mean squared error
             loss.backward() # run backpropagation
+            if self.verbose:
+                self.check_the_gradient_value_on_theta("After the Backwards step")
 
             optim.step() # update the parameters, just like w -= learning_rate * w.grad
             optim.zero_grad()
@@ -313,9 +323,9 @@ class NashCascadeNeuralNetwork(nn.Module):
             print(f"loss is: {loss}, theta[0][0][0] is: {self.theta[0][0][0]}")
 
             ###########################################################################
-            total_mass_precip_in = np.sum(np.array(u))
-            final_mass_in_network = np.sum([tensor.item() for tensor in self.sum_H_per_layer])
-            total_mass_outflow = np.sum(y_pred)
+            total_mass_precip_in = torch.sum(torch.tensor(u))
+            final_mass_in_network = torch.sum(torch.stack(self.sum_H_per_layer))
+            total_mass_outflow = torch.sum(torch.tensor(y_pred))
             print(f"Initial Mass in network at start: {inital_mass_in_network:.1f}")
             print(f"Final Mass in network: {final_mass_in_network:.1f}")
             print(f"Total Mass out of network {total_mass_outflow:.1f}")
@@ -326,4 +336,12 @@ class NashCascadeNeuralNetwork(nn.Module):
             print(f"Final mass balance is {mass_balance:.3f}")
 
         self.y_pred = y_pred
+
         self.loss = loss
+
+    # -----------------------------------------------------------------------#
+    #### NCNN #### NCNN #### NCNN #### NCNN #### NCNN #### NCNN #### NCNN ####
+    # -----------------------------------------------------------------------#
+    def check_the_gradient_value_on_theta(self, function_str):
+        if not self.theta.grad:
+            print(f"WARNING: Checking Gradients {function_str}: self.theta.grad", self.theta.grad)
