@@ -97,10 +97,6 @@ class NashCascadeNeuralNetwork(nn.Module):
 
             self.initialize_theta_values()
 
-            # bucket_network_dict[ilayer]["theta"] = torch.rand(n_buckets, n_spigots) * (theta2 - theta1) + theta1
-
-            # bucket_network_dict[ilayer]["theta"].requires_grad_()
-
         self.network = bucket_network_dict
         self.initialize_bucket_head_level()
     
@@ -173,7 +169,6 @@ class NashCascadeNeuralNetwork(nn.Module):
                 H = self.network[ilayer]["H"][ibucket]
                 S = self.network[ilayer]["S"][ibucket]
 
-#                theta = self.network[ilayer]["theta"][ibucket]
                 theta = self.theta[ilayer][ibucket]
 
                 single_bucket_inflow = inflows[ibucket]
@@ -260,7 +255,7 @@ class NashCascadeNeuralNetwork(nn.Module):
             for ibucket in range(n_buckets):
                 n_spigots = self.get_n_spigots_in_layer_buckets(ilayer)
                 for ispigot in range(n_spigots):
-                    random_val = self.range_of_theta_values[0] + (self.range_of_theta_values[1] - self.range_of_theta_values[0]) * torch.rand(1).item()
+                    random_val = self.range_of_theta_values[0] + (self.range_of_theta_values[1] - self.range_of_theta_values[0]) * torch.rand(1)
                     network[ilayer][ibucket].append(random_val)
 
         # Determine maximum dimensions for the tensor
@@ -287,8 +282,14 @@ class NashCascadeNeuralNetwork(nn.Module):
     #### NCNN #### NCNN #### NCNN #### NCNN #### NCNN #### NCNN #### NCNN ####
     # -----------------------------------------------------------------------#
     def train_theta_values(self, u, y_true):
+        """ This function is used to update the theta values to minimize the loss function
+            Args:
+                u (tensor): precipitation input
+                y_true (tensor): true predictions
+
+        """
         PRECIP_SVN = "atmosphere_water__liquid_equivalent_precipitation_rate"
-        N_TIMESTEPS = len(u)
+        N_TIMESTEPS = u.shape[0]#len(u)
         optim = torch.optim.SGD([self.theta],lr=self.learning_rate)
         for epoch in range(2):
 
@@ -304,14 +305,14 @@ class NashCascadeNeuralNetwork(nn.Module):
 
                 ###########################################################################
                 ###########################################################################
-                self.set_value(PRECIP_SVN, torch.tensor(u[i]))
+                self.set_value(PRECIP_SVN, u[i].clone().detach().requires_grad_(True))
                 self.update_network()
                 y_pred.append(self.network_outflow.item())
                 self.summarize_network()
                 ###########################################################################
                 ###########################################################################
 
-            err = (torch.tensor(y_true, requires_grad=True) - torch.tensor(y_pred, requires_grad=True))
+            err = (y_true - torch.tensor(y_pred, requires_grad=True))
             loss = err.pow(2.0).mean() # mean squared error
             loss.backward() # run backpropagation
             if self.verbose:
@@ -323,7 +324,7 @@ class NashCascadeNeuralNetwork(nn.Module):
             print(f"loss is: {loss}, theta[0][0][0] is: {self.theta[0][0][0]}")
 
             ###########################################################################
-            total_mass_precip_in = torch.sum(torch.tensor(u))
+            total_mass_precip_in = torch.sum(u)
             final_mass_in_network = torch.sum(torch.stack(self.sum_H_per_layer))
             total_mass_outflow = torch.sum(torch.tensor(y_pred))
             print(f"Initial Mass in network at start: {inital_mass_in_network:.1f}")
@@ -345,3 +346,95 @@ class NashCascadeNeuralNetwork(nn.Module):
     def check_the_gradient_value_on_theta(self, function_str):
         if not self.theta.grad:
             print(f"WARNING: Checking Gradients {function_str}: self.theta.grad", self.theta.grad)
+
+# -----------------------------------------------------------------------#
+# -----------------------------------------------------------------------#
+# -----------------------------------------------------------------------#
+# -----------------------------------------------------------------------#
+# -----------------------------------------------------------------------#
+# -----------------------------------------------------------------------#
+# -----------------------------------------------------------------------#
+# -----------------------------------------------------------------------#
+if __name__ == "__main__":
+    PRECIP_SVN = "atmosphere_water__liquid_equivalent_precipitation_rate"
+    DO_PLOT = False
+    N_TIMESTEPS = 500
+    network_precip_input_list = []
+    count = 0
+    for i in range(N_TIMESTEPS):
+        ###########################################################################
+        if count > 39:
+            network_precip_input_list.append(1.0)
+        else:
+            network_precip_input_list.append(0.0)
+        if count == 50:
+            count = 0
+        count+=1
+    network_precip_tensor = torch.tensor(network_precip_input_list, requires_grad=True)
+    total_mass_precip_in = torch.sum(network_precip_tensor)
+        ###########################################################################
+        ###########################################################################
+        ###########################################################################
+        ###########################################################################
+
+    ###########################################################################
+    ###########################################################################
+    ###########################################################################
+    ###########################################################################
+    # Example 0
+    bucket_net0 = NashCascadeNeuralNetwork(cfg_file="./config_0.json")
+    bucket_net0.initialize()
+    bucket_net0.summarize_network()
+    inital_mass_in_network0 = torch.sum(torch.tensor([tensor.item() for tensor in bucket_net0.sum_H_per_layer]))
+    network_outflow_list_0 = []
+    for i in range(N_TIMESTEPS):
+        bucket_net0.set_value(PRECIP_SVN, torch.tensor(network_precip_input_list[i], requires_grad=True))
+        bucket_net0.update_network()
+        network_outflow_list_0.append(bucket_net0.network_outflow.item())
+        bucket_net0.summarize_network()
+    network_outflow_tensor_0 = torch.tensor(network_outflow_list_0, requires_grad=True)
+    final_mass_in_network0 = torch.sum(torch.stack(bucket_net0.sum_H_per_layer))
+    total_mass_outflow = torch.sum(network_outflow_tensor_0)
+    print(f"Final Mass in network0: {final_mass_in_network0:.1f}")
+    print(f"Total Mass out of network0 {total_mass_outflow:.1f}")
+    print(f"Total precipitation into network0 {total_mass_precip_in:.1f}")
+    mass_balance = (inital_mass_in_network0 + total_mass_precip_in) - (final_mass_in_network0 + total_mass_outflow)
+    print(f"Final mass balance for network0 is {mass_balance:.3f}")
+    mass_balance = (inital_mass_in_network0 - final_mass_in_network0) - (total_mass_outflow - total_mass_precip_in)
+    print(f"Final mass balance for network0 is {mass_balance:.3f}")
+
+
+    ###########################################################################
+    ###########################################################################
+    ###########################################################################
+    ###########################################################################
+    # Example 1
+    bucket_net1 = NashCascadeNeuralNetwork(cfg_file="./config_1.json")
+    bucket_net1.initialize()
+    bucket_net1.summarize_network()
+    inital_mass_in_network1 = torch.sum(torch.stack(bucket_net1.sum_H_per_layer)).item()
+    print(f"Initial Mass in network at start: {inital_mass_in_network1:.1f}")
+    network_outflow_list_1 = []
+    for i in range(N_TIMESTEPS):
+        bucket_net1.set_value(PRECIP_SVN, torch.tensor(network_precip_input_list[i], requires_grad=True))
+        bucket_net1.update_network()
+        network_outflow_list_1.append(bucket_net1.network_outflow.item())
+        bucket_net1.summarize_network()
+    network_outflow_tensor_1 = torch.tensor(network_outflow_list_1, requires_grad=True)
+    final_mass_in_network1 = torch.sum(torch.stack(bucket_net1.sum_H_per_layer)).item()
+    total_mass_outflow_network1 = torch.sum(torch.tensor(network_outflow_list_1)).item()
+    print(f"Final Mass in network1: {final_mass_in_network1:.1f}")
+    print(f"Total Mass out of network1 {total_mass_outflow_network1:.1f}")
+    print(f"Total precipitation into network1 {total_mass_precip_in:.1f}")
+    mass_balance = (inital_mass_in_network1 + total_mass_precip_in) - (final_mass_in_network1 + total_mass_outflow_network1)
+    print(f"Final mass balance for network1 is {mass_balance:.3f}")
+    mass_balance = (inital_mass_in_network1 - final_mass_in_network1) - (total_mass_outflow_network1 - total_mass_precip_in)
+    print(f"Final mass balance for network1 is {mass_balance:.3f}")
+
+
+    ###########################################################################
+    ###########################################################################
+    ###########################################################################
+    ###########################################################################
+    # Train theta values of Network1
+    bucket_net1.train_theta_values(network_precip_tensor, network_outflow_tensor_0)

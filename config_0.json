@@ -2,14 +2,14 @@
   "verbose": "True",
   "initial_head_in_buckets": 20, 
   "bpl": [
-      1,
-      2,
-      2,
-      2,
-      2,
-      2,
-      2,
-      2
+    1,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2
   ],
  "range_of_theta_values": [0.15, 0.2],
  "seed": 0
