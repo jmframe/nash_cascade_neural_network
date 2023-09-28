@@ -37,6 +37,8 @@ class NashCascadeNeuralNetwork(nn.Module):
         torch.manual_seed(cfg_loaded['seed'])
         if cfg_loaded['verbose'] == "True":
             self.verbose = True
+        else:
+            self.verbose = False
 
     # ___________________________________________________
     ## SANITY CHECK ON GRADIENT VALUE
@@ -57,7 +59,7 @@ class NashCascadeNeuralNetwork(nn.Module):
 
 # ___________________________________________________
 ## PARAMETER TUNING
-def train_theta_values(model, config_file, u, y_true):
+def train_theta_values(model, cfg_file, u, y_true):
     """ This function is used to update the theta values to minimize the loss function
         Args:
             model (ncnn): NashCascadeNeuralNetwork
@@ -91,16 +93,17 @@ def train_theta_values(model, config_file, u, y_true):
 
         if model.verbose:
             model.check_the_gradient_value_on_theta("After the Backwards step")
+            print(f"loss is: {loss:.1f}, theta[0][0][0] is: {model.ncn.theta[0][0][0]:.1f}")
+            model.ncn.report_out_mass_balance()
+        else:
+            print(f"loss: {loss:.1f}")
 
-        print(f"loss is: {loss:.1f}, theta[0][0][0] is: {model.ncn.theta[0][0][0]:.1f}")
-
-        model.ncn.report_out_mass_balance()
-
-        model.ncn.detach_ncn_from_graph()
-
+#        model.ncn.detach_ncn_from_graph()
         local_theta_values = model.ncn.theta#.detach()
+        u = u.detach()
+        y_true = y_true.detach()
 
-    return loss
+    return y_pred, loss
 
 # -----------------------------------------------------------------------#
 # -----------------------------------------------------------------------#
@@ -111,7 +114,7 @@ def train_theta_values(model, config_file, u, y_true):
 # -----------------------------------------------------------------------#
 # -----------------------------------------------------------------------#
 if __name__ == "__main__":
-    N_TIMESTEPS = 1
+    N_TIMESTEPS = 5
     network_precip_input_list = []
     count = 0
     for i in range(N_TIMESTEPS):
