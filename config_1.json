@@ -3,10 +3,11 @@
   "initial_head_in_buckets": 20, 
   "bpl": [
     1,
+    2,
     2
   ],
- "range_of_theta_values": [0.15, 0.2],
+ "range_of_theta_values": [0.1, 0.3],
  "seed": 1,
- "learning_rate": 10e-4,
- "epochs": 10
+ "learning_rate": 1e-3,
+ "epochs": 25
 }

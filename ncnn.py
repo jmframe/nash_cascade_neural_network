@@ -76,6 +76,7 @@ def train_theta_values(model, cfg_file, u, y_true):
             model.ncn = NashCascadeNetwork(cfg_file=cfg_file)
             model.ncn.initialize()
             model.ncn.theta = local_theta_values
+            model.ncn.network = local_network
 
         optim.zero_grad()
 
@@ -96,10 +97,11 @@ def train_theta_values(model, cfg_file, u, y_true):
             print(f"loss is: {loss:.1f}, theta[0][0][0] is: {model.ncn.theta[0][0][0]:.1f}")
             model.ncn.report_out_mass_balance()
         else:
-            print(f"loss: {loss:.1f}")
+            print(f"loss: {loss:.4f}, theta[0].grad[-1][-1][0]: {model.ncn.theta.grad[-1][-1][0]:.2f}, theta[0][0][0] is: {model.ncn.theta[-1][-1][0]:.2f}")
 
-#        model.ncn.detach_ncn_from_graph()
+        model.ncn.detach_ncn_from_graph()
         local_theta_values = model.ncn.theta#.detach()
+        local_network = model.ncn.network#.detach()
         u = u.detach()
         y_true = y_true.detach()
 
@@ -114,7 +116,7 @@ def train_theta_values(model, cfg_file, u, y_true):
 # -----------------------------------------------------------------------#
 # -----------------------------------------------------------------------#
 if __name__ == "__main__":
-    N_TIMESTEPS = 5
+    N_TIMESTEPS = 500
     network_precip_input_list = []
     count = 0
     for i in range(N_TIMESTEPS):
@@ -146,7 +148,7 @@ if __name__ == "__main__":
     # Train theta values of Network1
     cfg_file="./config_1.json"
     bucket_net1 = NashCascadeNeuralNetwork(cfg_file=cfg_file)
-    loss = train_theta_values(bucket_net1, cfg_file, network_precip_tensor, network_outflow_tensor_0)
-    from torchviz import make_dot
-    make_dot(loss).view()
-    loss.detach()
+    y_pred, loss = train_theta_values(bucket_net1, cfg_file, network_precip_tensor, network_outflow_tensor_0)
+    if N_TIMESTEPS < 5:
+        from torchviz import make_dot
+        make_dot(loss).view()
