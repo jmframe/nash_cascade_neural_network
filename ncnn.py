@@ -92,12 +92,7 @@ def train_theta_values(model, cfg_file, u, y_true):
 
         optim.step() # update the parameters, just like w -= learning_rate * w.grad
 
-        if model.verbose:
-            model.check_the_gradient_value_on_theta("After the Backwards step")
-            print(f"loss is: {loss:.1f}, theta[0][0][0] is: {model.ncn.theta[0][0][0]:.1f}")
-            model.ncn.report_out_mass_balance()
-        else:
-            print(f"loss: {loss:.4f}, theta[0].grad[-1][-1][0]: {model.ncn.theta.grad[-1][-1][0]:.2f}, theta[0][0][0] is: {model.ncn.theta[-1][-1][0]:.2f}")
+        print(f"loss: {loss:.4f}")
 
         model.ncn.detach_ncn_from_graph()
         local_theta_values = model.ncn.theta#.detach()
@@ -116,7 +111,7 @@ def train_theta_values(model, cfg_file, u, y_true):
 # -----------------------------------------------------------------------#
 # -----------------------------------------------------------------------#
 if __name__ == "__main__":
-    N_TIMESTEPS = 500
+    N_TIMESTEPS = 15
     network_precip_input_list = []
     count = 0
     for i in range(N_TIMESTEPS):
@@ -149,6 +144,9 @@ if __name__ == "__main__":
     cfg_file="./config_1.json"
     bucket_net1 = NashCascadeNeuralNetwork(cfg_file=cfg_file)
     y_pred, loss = train_theta_values(bucket_net1, cfg_file, network_precip_tensor, network_outflow_tensor_0)
+    print(bucket_net1.ncn.theta)
+    print(bucket_net1.ncn.theta.grad)
+    bucket_net1.ncn.report_out_mass_balance()
     if N_TIMESTEPS < 5:
         from torchviz import make_dot
         make_dot(loss).view()
