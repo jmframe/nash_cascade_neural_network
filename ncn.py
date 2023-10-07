@@ -122,42 +122,10 @@ class NashCascadeNetwork():
                 H (tensor): The new height of the water in a bucket
                 s_q (tensor): Flow out of each spigot of the bucket
         """
-        # H = H + bucket_inflow
-        # H_effective = H
-        # n_spigots = S.shape[0]
-        
-        # # Initialize s_q as a tensor with zeros
-        # s_q = torch.zeros(n_spigots)
-        # for i, (S_i, theta_i) in enumerate(zip(S, theta)):
-        #     print(theta_i, theta_i.grad)
-        #     sp_h, sp_a = S_i
-
-        #     # Here we don't want to use the full H, but we actually want to integrate from H_(t-1) to H_t
-        #     # But we can't know H_t unless we run the calculation.
-        #     # So unless we iterate, we can't really solve this.
-        #     h = torch.max(torch.tensor(0.0), H_effective - sp_h)
-        #     v = theta_i * torch.sqrt(2 * self.G * h)
-        #     flow_out = v * sp_a
-            
-        #     # Directly assign the value to the tensor
-        #     s_q[i] = flow_out
-
-        #     # But for the lower spigots, we can simplify to calculate v as a function of half the head lost from previous spigots
-        #     H_effective = H - torch.sum(s_q[:i+1]) / 2
-
-        # Q = torch.sum(s_q)
-        # # Then we need to subtract out the total lost head
-        # H = H - Q
-
-        # return H, s_q
         print("H", H)
         H_initial_local = H.clone()
         H_effective = H_initial_local + bucket_inflow
         n_spigots = S.shape[0]
-        print("H_initial_local", H_initial_local)
-        # print("bucket_inflow", bucket_inflow)
-        print("H_effective", H_effective)
-        # print("S", S)
         
         # Initialize s_q as a tensor with zeros
         s_q_local = torch.zeros(n_spigots).clone()
@@ -177,11 +145,10 @@ class NashCascadeNetwork():
 
             # But for the lower spigots, we can simplify to calculate v as a function of half the head lost from previous spigots
             H_effective = H_initial_local - torch.sum(s_q_local[:i+1]) / 2
-        print("H_initial_local", H_initial_local)
-        # Then we need to subtract out the total lost head
-        H_final = H_initial_local - torch.sum(s_q_local)
-        print("H_final", H_final)
-        print("------------------------------------------------")
+
+        # Then we need to add the inflow and subtract out the total lost head
+        H_final = H_initial_local - torch.sum(s_q_local) + bucket_inflow
+        
         return H_final, s_q_local
 
     # ___________________________________________________
