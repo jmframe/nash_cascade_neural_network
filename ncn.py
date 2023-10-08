@@ -122,7 +122,6 @@ class NashCascadeNetwork():
                 H (tensor): The new height of the water in a bucket
                 s_q (tensor): Flow out of each spigot of the bucket
         """
-        print("H", H)
         H_initial_local = H.clone()
         H_effective = H_initial_local + bucket_inflow
         n_spigots = S.shape[0]

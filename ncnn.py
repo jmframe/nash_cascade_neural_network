@@ -59,7 +59,7 @@ class NashCascadeNeuralNetwork(nn.Module):
 
 # ___________________________________________________
 ## PARAMETER TUNING
-def train_theta_values(model, cfg_file, u, y_true):
+def train_theta_values(model, u, y_true):
     """ This function is used to update the theta values to minimize the loss function
         Args:
             model (ncnn): NashCascadeNeuralNetwork
@@ -67,26 +67,25 @@ def train_theta_values(model, cfg_file, u, y_true):
             y_true (tensor): true predictions
 
     """
-
+    # Instantiate the loss function
+    criterion = nn.MSELoss()
     optim = torch.optim.SGD([model.ncn.theta],lr=model.learning_rate)
 
     for epoch in range(model.epochs):
 
         if epoch > 0:
-            model.ncn = NashCascadeNetwork(cfg_file=cfg_file)
             model.ncn.initialize()
             model.ncn.theta = local_theta_values
             model.ncn.network = local_network
 
-        optim.zero_grad()
-
         model.ncn.initialize_bucket_head_level()
 
-        y_pred = model(u)
+        optim.zero_grad()
 
-        err = (y_true - y_pred)
+        # FORWARD PASS OF THE MODEL
+        y_pred = model.forward(u)
 
-        loss = err.pow(2.0).mean() # mean squared error
+        loss = criterion(y_pred, y_true)
 
         loss.backward() # run backpropagation
 
@@ -95,12 +94,39 @@ def train_theta_values(model, cfg_file, u, y_true):
         print(f"loss: {loss:.4f}")
 
         model.ncn.detach_ncn_from_graph()
-        local_theta_values = model.ncn.theta#.detach()
-        local_network = model.ncn.network#.detach()
-        u = u.detach()
-        y_true = y_true.detach()
+        local_theta_values = model.ncn.theta
+        local_network = model.ncn.network
 
     return y_pred, loss
+
+def train_theta_values2(model, u, y_true):
+    """ This function is used to update the theta values to minimize the loss function
+        Args:
+            model (ncnn): NashCascadeNeuralNetwork
+            u (tensor): precipitation input
+            y_true (tensor): true predictions
+    """
+    # Instantiate the loss function
+    criterion = nn.MSELoss()
+    optim = torch.optim.SGD([model.ncn.theta], lr=model.learning_rate)
+
+    for epoch in range(model.epochs):
+
+        optim.zero_grad()
+
+        # FORWARD PASS OF THE MODEL
+        y_pred = model.forward(u)
+
+        loss = criterion(y_pred, y_true)
+
+        loss.backward()  # run backpropagation
+
+        optim.step()  # update the parameters
+
+        print(f"loss: {loss:.4f}")
+
+    return y_pred, loss
+
 
 # -----------------------------------------------------------------------#
 # -----------------------------------------------------------------------#
@@ -143,7 +169,7 @@ if __name__ == "__main__":
     # Train theta values of Network1
     cfg_file="./config_1.json"
     bucket_net1 = NashCascadeNeuralNetwork(cfg_file=cfg_file)
-    y_pred, loss = train_theta_values(bucket_net1, cfg_file, network_precip_tensor, network_outflow_tensor_0)
+    y_pred, loss = train_theta_values(bucket_net1, network_precip_tensor.detach(), network_outflow_tensor_0.detach())
     print(bucket_net1.ncn.theta)
     print(bucket_net1.ncn.theta.grad)
     bucket_net1.ncn.report_out_mass_balance()
