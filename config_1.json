@@ -9,5 +9,5 @@
  "precip_distribution": "even",
  "seed": 1,
  "learning_rate": 5e-3,
- "epochs": 2
+ "epochs": 20
 }
