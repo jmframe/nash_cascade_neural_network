@@ -44,6 +44,12 @@ class NashCascadeNetwork():
         self.range_of_theta_values = cfg_loaded['range_of_theta_values']
         self.initial_head_in_buckets = cfg_loaded['initial_head_in_buckets']
         self.precip_distribution = cfg_loaded['precip_distribution']
+        # Have to specificy explicitly if the thetat values should not be set.
+        if 'do_initialize_random_theta_values' in list(cfg_loaded.keys()):
+            if cfg_loaded['do_initialize_random_theta_values'] == "False":
+                self.do_initialize_random_theta_values = False
+        else:
+            self.do_initialize_random_theta_values = True
 
     # ___________________________________________________
     ## PARAMETER INITIALIZATION
@@ -104,8 +110,8 @@ class NashCascadeNetwork():
             zeros_tensor = torch.zeros((n_buckets, n_spigots), requires_grad=True)
             bucket_network_dict[ilayer]["s_q"] = zeros_tensor
 
+        if self.do_initialize_random_theta_values:
             self.initialize_theta_values()
-
         self.network = bucket_network_dict
         self.initialize_bucket_head_level()
     
@@ -269,9 +275,8 @@ class NashCascadeNetwork():
     # ___________________________________________________
     ## SANITY CHECK ON GRADIENT VALUE
     def check_the_gradient_value_on_theta(self, function_str):
-        print(f"WARNING: Checking Gradients {function_str}: self.theta.grad", self.theta.grad)
-        # if not self.theta.grad:
-        #     print(f"WARNING: Checking Gradients {function_str}: self.theta.grad", self.theta.grad)
+        if torch.sum(torch.abs(self.theta.grad)) == 0:
+            print(f"WARNING: Checking Gradients {function_str}: self.theta.grad", self.theta.grad)
 
     # ________________________________________________
     # Mass balance tracking

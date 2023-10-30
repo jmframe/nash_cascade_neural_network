@@ -42,10 +42,9 @@ class NashCascadeNeuralNetwork(nn.Module):
 
     # ___________________________________________________
     ## SANITY CHECK ON GRADIENT VALUE
-    def check_the_gradient_value_on_theta(self, function_str):
-        print(f"WARNING: Checking Gradients {function_str}: self.theta.grad", self.ncn.theta.grad)
-        # if not self.theta.grad:
-        #     print(f"WARNING: Checking Gradients {function_str}: self.theta.grad", self.theta.grad)
+    def check_the_gradient_value_on_theta(self, function_str=""):
+        if torch.sum(torch.abs(self.ncn.theta.grad)) == 0:
+            print(f"WARNING: Checking Gradients {function_str}: self.theta.grad", self.ncn.theta.grad)
 
     # ________________________________________________
     # Forward 
@@ -73,14 +72,14 @@ def train_theta_values(model, u, y_true):
 
     for epoch in range(model.epochs):
 
+        optim.zero_grad()
+
         if epoch > 0:
             model.ncn.initialize()
             model.ncn.theta = local_theta_values
             model.ncn.network = local_network
 
         model.ncn.initialize_bucket_head_level()
-
-        optim.zero_grad()
 
         # FORWARD PASS OF THE MODEL
         y_pred = model.forward(u)
@@ -96,6 +95,8 @@ def train_theta_values(model, u, y_true):
         model.ncn.detach_ncn_from_graph()
         local_theta_values = model.ncn.theta
         local_network = model.ncn.network
+
+    model.check_the_gradient_value_on_theta(function_str="train_theta_values")
 
     return y_pred, loss
 
@@ -137,7 +138,7 @@ def train_theta_values2(model, u, y_true):
 # -----------------------------------------------------------------------#
 # -----------------------------------------------------------------------#
 if __name__ == "__main__":
-    N_TIMESTEPS = 15
+    N_TIMESTEPS = 150
     network_precip_input_list = []
     count = 0
     for i in range(N_TIMESTEPS):
@@ -169,6 +170,7 @@ if __name__ == "__main__":
     # Train theta values of Network1
     cfg_file="./config_1.json"
     bucket_net1 = NashCascadeNeuralNetwork(cfg_file=cfg_file)
+    bucket_net1.ncn.initialize_theta_values()
     y_pred, loss = train_theta_values(bucket_net1, network_precip_tensor.detach(), network_outflow_tensor_0.detach())
     print(bucket_net1.ncn.theta)
     print(bucket_net1.ncn.theta.grad)
