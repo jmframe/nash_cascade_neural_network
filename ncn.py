@@ -108,11 +108,7 @@ class NashCascadeNetwork(nn.Module):
                     values_list.append(random_val.item())  # Convert tensor to scalar and append
 
         # Convert the list to a 1D tensor
-        tensor_values = torch.tensor(values_list, requires_grad=True)
-
-        # Convert the tensor to an nn.Parameter
-#        self.theta = nn.Parameter(tensor_values)
-        self.theta = tensor_values
+        self.theta = torch.tensor(values_list, requires_grad=True)
 
     # ___________________________________________________
     ## INITIAL HEAD LEVEL IN EACH BUCKET
@@ -279,6 +275,7 @@ class NashCascadeNetwork(nn.Module):
             # Assuming lstm_output is [1, sequence_length, hidden_size] and self.theta is [hidden_size]
             lstm_output = lstm_output.squeeze(0)  # remove batch dimension
             self.theta = lstm_output[-1]  # take the last timestep
+#            print(self.theta)
         
         for ilayer in list(self.network.keys()):
 
@@ -358,12 +355,6 @@ class NashCascadeNetwork(nn.Module):
         else:
             n_spigots = 1
         return n_spigots
-
-    # ___________________________________________________
-    ## SANITY CHECK ON GRADIENT VALUE
-    def check_the_gradient_value_on_theta(self, function_str):
-        if torch.sum(torch.abs(self.theta.grad)) == 0:
-            print(f"WARNING: Checking Gradients {function_str}: self.theta.grad", self.theta.grad)
 
     # ________________________________________________
     # Mass balance tracking

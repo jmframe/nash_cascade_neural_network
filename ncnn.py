@@ -39,15 +39,6 @@ class NashCascadeNeuralNetwork(nn.Module):
         else:
             self.verbose = False
 
-    # ___________________________________________________
-    ## SANITY CHECK ON GRADIENT VALUE
-    def check_the_gradient_value_on_theta(self, function_str=""):
-        try:
-            if torch.sum(torch.abs(self.ncn.theta.grad)) == 0:
-                print(f"WARNING: Checking Gradients {function_str}: self.theta.grad", self.ncn.theta.grad)
-        except:
-            print("self.ncn.theta.grad sum not working")
-
     # ________________________________________________
     # Forward 
     def forward(self, u):
@@ -79,18 +70,14 @@ def train_model(model, u, y_true):
     # Create the optimizer instance with the combined parameter list
     optimizer = optim.SGD(all_params, lr=model.learning_rate)
 
-    scheduler = StepLR(optimizer, step_size=10, gamma=0.1)
+    scheduler = StepLR(optimizer, step_size=10, gamma=0.9)
 
     for epoch in range(model.epochs):
 
         optimizer.zero_grad()
 
-        # if epoch > 0:
-        #     model.ncn.initialize(initialize_LSTM = False)
-#        model.ncn.initialize_bucket_head_level()
-
         # FORWARD PASS OF THE MODEL
-        y_pred = model.ncn.run_ncn_sequence(u) #model.forward(u)
+        y_pred = model.forward(u)
 
         start_criterion = int(y_pred.shape[0]/2)
         loss = criterion(y_pred[start_criterion:], y_true[start_criterion:])
@@ -99,19 +86,11 @@ def train_model(model, u, y_true):
 
         optimizer.step() # update the parameters, just like w -= learning_rate * w.grad
 
-        print(f"loss: {loss:.4f}, theta: {model.ncn.theta}")
+        print(f"loss: {loss:.4f}")#, theta: {model.ncn.theta}")
 
         model.ncn.detach_ncn_from_graph()
 
         scheduler.step()
-
-        # # To print gradients for the LSTM layer
-        # print("Parameters and Gradients")
-        # for parameter in all_params:
-        #     print(parameter)
-        #     print(parameter.grad)
-
-    #model.check_the_gradient_value_on_theta(function_str="train_theta_values")
 
     return y_pred, loss
 
@@ -124,15 +103,15 @@ def train_model(model, u, y_true):
 # -----------------------------------------------------------------------#
 # -----------------------------------------------------------------------#
 if __name__ == "__main__":
-    N_TIMESTEPS = 400
+    N_TIMESTEPS = 1000
     network_precip_input_list = []
     count = 0
     for i in range(N_TIMESTEPS):
         ###########################################################################
         if count == 1:
-            network_precip_input_list.append(1.0)
+            network_precip_input_list.append(3.0)
         elif count > 39:
-            network_precip_input_list.append(1.0)
+            network_precip_input_list.append(3.0)
         else:
             network_precip_input_list.append(0.0)
         if count == 50:
