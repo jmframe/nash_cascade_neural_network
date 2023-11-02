@@ -12,9 +12,8 @@ import torch
 import json
 import torch.nn as nn
 from ncn import NashCascadeNetwork
-
-G = 9.81
-PRECIP_SVN = "atmosphere_water__liquid_equivalent_precipitation_rate"
+import torch.optim as optim
+from torch.optim.lr_scheduler import StepLR
 
 class NashCascadeNeuralNetwork(nn.Module):
 
@@ -43,8 +42,11 @@ class NashCascadeNeuralNetwork(nn.Module):
     # ___________________________________________________
     ## SANITY CHECK ON GRADIENT VALUE
     def check_the_gradient_value_on_theta(self, function_str=""):
-        if torch.sum(torch.abs(self.ncn.theta.grad)) == 0:
-            print(f"WARNING: Checking Gradients {function_str}: self.theta.grad", self.ncn.theta.grad)
+        try:
+            if torch.sum(torch.abs(self.ncn.theta.grad)) == 0:
+                print(f"WARNING: Checking Gradients {function_str}: self.theta.grad", self.ncn.theta.grad)
+        except:
+            print("self.ncn.theta.grad sum not working")
 
     # ________________________________________________
     # Forward 
@@ -58,7 +60,7 @@ class NashCascadeNeuralNetwork(nn.Module):
 
 # ___________________________________________________
 ## PARAMETER TUNING
-def train_theta_values(model, u, y_true):
+def train_model(model, u, y_true):
     """ This function is used to update the theta values to minimize the loss function
         Args:
             model (ncnn): NashCascadeNeuralNetwork
@@ -68,66 +70,50 @@ def train_theta_values(model, u, y_true):
     """
     # Instantiate the loss function
     criterion = nn.MSELoss()
-    optim = torch.optim.SGD([model.ncn.theta],lr=model.learning_rate)
+    # We will collect all parameters from both the LSTM and Linear layer for optimization
+    lstm_params = model.ncn.lstm.parameters()
+    linear_params = model.ncn.linear.parameters()
+    # Combine all parameters into a single list
+    all_params = list(lstm_params) + list(linear_params)
+
+    # Create the optimizer instance with the combined parameter list
+    optimizer = optim.SGD(all_params, lr=model.learning_rate)
+
+    scheduler = StepLR(optimizer, step_size=10, gamma=0.1)
 
     for epoch in range(model.epochs):
 
-        optim.zero_grad()
+        optimizer.zero_grad()
 
-        if epoch > 0:
-            model.ncn.initialize()
-            model.ncn.theta = local_theta_values
-            model.ncn.network = local_network
-
-        model.ncn.initialize_bucket_head_level()
+        # if epoch > 0:
+        #     model.ncn.initialize(initialize_LSTM = False)
+#        model.ncn.initialize_bucket_head_level()
 
         # FORWARD PASS OF THE MODEL
-        y_pred = model.forward(u)
+        y_pred = model.ncn.run_ncn_sequence(u) #model.forward(u)
 
-        loss = criterion(y_pred, y_true)
+        start_criterion = int(y_pred.shape[0]/2)
+        loss = criterion(y_pred[start_criterion:], y_true[start_criterion:])
 
         loss.backward() # run backpropagation
 
-        optim.step() # update the parameters, just like w -= learning_rate * w.grad
+        optimizer.step() # update the parameters, just like w -= learning_rate * w.grad
 
-        print(f"loss: {loss:.4f}")
+        print(f"loss: {loss:.4f}, theta: {model.ncn.theta}")
 
         model.ncn.detach_ncn_from_graph()
-        local_theta_values = model.ncn.theta
-        local_network = model.ncn.network
 
-    model.check_the_gradient_value_on_theta(function_str="train_theta_values")
+        scheduler.step()
 
-    return y_pred, loss
+        # # To print gradients for the LSTM layer
+        # print("Parameters and Gradients")
+        # for parameter in all_params:
+        #     print(parameter)
+        #     print(parameter.grad)
 
-def train_theta_values2(model, u, y_true):
-    """ This function is used to update the theta values to minimize the loss function
-        Args:
-            model (ncnn): NashCascadeNeuralNetwork
-            u (tensor): precipitation input
-            y_true (tensor): true predictions
-    """
-    # Instantiate the loss function
-    criterion = nn.MSELoss()
-    optim = torch.optim.SGD([model.ncn.theta], lr=model.learning_rate)
-
-    for epoch in range(model.epochs):
-
-        optim.zero_grad()
-
-        # FORWARD PASS OF THE MODEL
-        y_pred = model.forward(u)
-
-        loss = criterion(y_pred, y_true)
-
-        loss.backward()  # run backpropagation
-
-        optim.step()  # update the parameters
-
-        print(f"loss: {loss:.4f}")
+    #model.check_the_gradient_value_on_theta(function_str="train_theta_values")
 
     return y_pred, loss
-
 
 # -----------------------------------------------------------------------#
 # -----------------------------------------------------------------------#
@@ -138,12 +124,14 @@ def train_theta_values2(model, u, y_true):
 # -----------------------------------------------------------------------#
 # -----------------------------------------------------------------------#
 if __name__ == "__main__":
-    N_TIMESTEPS = 150
+    N_TIMESTEPS = 400
     network_precip_input_list = []
     count = 0
     for i in range(N_TIMESTEPS):
         ###########################################################################
-        if count > 39:
+        if count == 1:
+            network_precip_input_list.append(1.0)
+        elif count > 39:
             network_precip_input_list.append(1.0)
         else:
             network_precip_input_list.append(0.0)
@@ -171,10 +159,8 @@ if __name__ == "__main__":
     cfg_file="./config_1.json"
     bucket_net1 = NashCascadeNeuralNetwork(cfg_file=cfg_file)
     bucket_net1.ncn.initialize_theta_values()
-    y_pred, loss = train_theta_values(bucket_net1, network_precip_tensor.detach(), network_outflow_tensor_0.detach())
-    print(bucket_net1.ncn.theta)
-    print(bucket_net1.ncn.theta.grad)
+    y_pred, loss = train_model(bucket_net1, network_precip_tensor.detach(), network_outflow_tensor_0.detach())
     bucket_net1.ncn.report_out_mass_balance()
-    if N_TIMESTEPS < 5:
+    if N_TIMESTEPS <= 5:
         from torchviz import make_dot
         make_dot(loss).view()

@@ -1,11 +1,12 @@
 {
   "verbose": "True",
-  "initial_head_in_buckets": 20, 
+  "initial_head_in_buckets": 2, 
   "bpl": [
     1,
-    2
+    1
   ],
- "range_of_theta_values": [0.01, 0.25],
+ "range_of_theta_values": [0.24, 0.25],
  "precip_distribution": "even",
+ "do_predict_theta_with_lstm": "False",
  "seed": 0
 }

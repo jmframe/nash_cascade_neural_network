@@ -14,24 +14,56 @@ import torch.nn as nn
 
 G = 9.81
 PRECIP_SVN = "atmosphere_water__liquid_equivalent_precipitation_rate"
+PRECIP_SVN_SEQ = "atmosphere_water__liquid_equivalent_precipitation_rate_seq"
 
-class NashCascadeNetwork():
+class NashCascadeNetwork(nn.Module):
 
     def __init__(self, cfg_file=None, verbose=False):
+        super(NashCascadeNetwork, self).__init__()
         self.cfg_file = cfg_file
         self.verbose = verbose
-        self.G = torch.tensor(9.81, requires_grad=True)  # Gravitational constant
+        self.G = 9.8
 
     # BMI: Model Control Function
     # ___________________________________________________
     ## INITIALIZATION as required by BMI
-    def initialize(self, current_time_step=0):
+    def initialize(self, initialize_LSTM = True):
         # ________________________________________________________ #
         # GET VALUES FROM CONFIGURATION FILE.                      #
         self.config_from_json()
         self.initialize_up_bucket_network()
-        self.precip_into_network_at_update = torch.tensor(0.0, dtype=torch.float, requires_grad=True)
+        self.precip_into_network_at_update = torch.tensor(0.0, dtype=torch.float, requires_grad=False)
         self.reset_volume_tracking()
+        if self.do_predict_theta_with_lstm:
+            self.lstm_hidden_size = self.theta.numel()  # Set according to your needs
+            self.lstm_num_layers = 2    # Number of LSTM layers
+            self.initialize_LSTM()
+
+    # ___________________________________________________
+    ## INITIALIZE THE LSTM
+    def initialize_LSTM(self):
+        """ Sets up an LSTM that will predict the theta values at each time step
+            LSTM Inputs: H_tensor & u[i-input_sequence_length:i]
+            LSTM Target: self.theta
+        """
+        # Assuming self.H_tensor and self.theta are already initialized elsewhere
+        H_tensor = self.get_the_H_tensor()
+        self.input_u_sequence_length = self.n_network_layers + 1
+
+        # Assuming input to the model u is of shape [sequence_length, batch_size, features]
+        # LSTM input size is the size of H_tensor plus the number of features in u
+        lstm_input_size = H_tensor.numel() + self.input_u_sequence_length  # Here we're assuming u has a single feature dimension
+        self.linear = nn.Linear(self.lstm_hidden_size, self.theta.numel())
+        self.sigmoid = nn.Sigmoid()
+        self.lstm = nn.LSTM(
+            input_size=lstm_input_size,
+            hidden_size=self.lstm_hidden_size,
+            num_layers=self.lstm_num_layers
+        )
+
+        # Initialize hidden state and cell state
+        self.hidden = (torch.zeros(self.lstm_num_layers, 1, self.lstm_hidden_size),
+                       torch.zeros(self.lstm_num_layers, 1, self.lstm_hidden_size))
 
     # ___________________________________________________
     ## CONFIGURATIONS read in from json file
@@ -48,40 +80,46 @@ class NashCascadeNetwork():
         if 'do_initialize_random_theta_values' in list(cfg_loaded.keys()):
             if cfg_loaded['do_initialize_random_theta_values'] == "False":
                 self.do_initialize_random_theta_values = False
+            else:
+                self.do_initialize_random_theta_values = True
         else:
             self.do_initialize_random_theta_values = True
+        # Have to specificy explicitly that we want to use an LSTM to predict Theta.
+        if 'do_predict_theta_with_lstm' in list(cfg_loaded.keys()):
+            if cfg_loaded['do_predict_theta_with_lstm'] == "True":
+                self.do_predict_theta_with_lstm = True
+            else:
+                self.do_predict_theta_with_lstm = False
+        else:
+            self.do_predict_theta_with_lstm = False
 
     # ___________________________________________________
     ## PARAMETER INITIALIZATION
     def initialize_theta_values(self):
         """ Sets random values for parameters on all spigots
         """
-        # Your original network creation
-        network = [[[] for _ in range(self.bpl[ilayer])] for ilayer in range(self.n_network_layers)]
+        values_list = []
         for ilayer in range(self.n_network_layers):
             n_buckets = self.bpl[ilayer]
             for ibucket in range(n_buckets):
                 n_spigots = self.get_n_spigots_in_layer_buckets(ilayer)
                 for ispigot in range(n_spigots):
                     random_val = self.range_of_theta_values[0] + (self.range_of_theta_values[1] - self.range_of_theta_values[0]) * torch.rand(1)
-                    network[ilayer][ibucket].append(random_val)
+                    values_list.append(random_val.item())  # Convert tensor to scalar and append
 
-        # Determine maximum dimensions for the tensor
-        max_buckets = max(self.bpl)
-        max_spigots = max([self.get_n_spigots_in_layer_buckets(ilayer) for ilayer in range(self.n_network_layers)])
+        # Convert the list to a 1D tensor
+        tensor_values = torch.tensor(values_list, requires_grad=True)
 
-        # Use a list comprehension to create a structure with the correct values and padding
-        tensor_values = [[[network[ilayer][ibucket][ispigot] if (ibucket < len(network[ilayer]) and ispigot < len(network[ilayer][ibucket])) else 0 
-                        for ispigot in range(max_spigots)] for ibucket in range(max_buckets)] for ilayer in range(self.n_network_layers)]
-
-        # Convert the list to a tensor with required gradients
-        self.theta = nn.Parameter(torch.tensor(tensor_values, requires_grad=True))
+        # Convert the tensor to an nn.Parameter
+#        self.theta = nn.Parameter(tensor_values)
+        self.theta = tensor_values
 
     # ___________________________________________________
     ## INITIAL HEAD LEVEL IN EACH BUCKET
     def initialize_bucket_head_level(self):
         for ilayer, n_buckets in enumerate(self.bpl):
-            H0_tensor = torch.tensor(self.initial_head_in_buckets, dtype=torch.float32)
+#            H0_tensor = torch.tensor(self.initial_head_in_buckets, dtype=torch.float32, requires_grad=True)
+            H0_tensor = torch.tensor(self.initial_head_in_buckets, dtype=torch.float32, requires_grad=False)
             self.network[ilayer]["H"] = H0_tensor.repeat(n_buckets)
         self.summarize_network()
     
@@ -103,11 +141,13 @@ class NashCascadeNetwork():
             n_spigots = self.get_n_spigots_in_layer_buckets(ilayer)
 
             # Initialize tensor with shape [n_buckets, n_spigots, 2]
-            spigot_tensor = torch.rand((n_buckets, n_spigots, 2), requires_grad=True)
-            
+#            spigot_tensor = torch.rand((n_buckets, n_spigots, 2), requires_grad=True)
+            spigot_tensor = torch.rand((n_buckets, n_spigots, 2), requires_grad=False)
+
             bucket_network_dict[ilayer]["S"] = spigot_tensor
 
-            zeros_tensor = torch.zeros((n_buckets, n_spigots), requires_grad=True)
+#            zeros_tensor = torch.zeros((n_buckets, n_spigots), requires_grad=True)
+            zeros_tensor = torch.zeros((n_buckets, n_spigots), requires_grad=False)
             bucket_network_dict[ilayer]["s_q"] = zeros_tensor
 
         if self.do_initialize_random_theta_values:
@@ -117,12 +157,12 @@ class NashCascadeNetwork():
     
     # ___________________________________________________
     ## SOLVE THE FLOW OUT OF A SINGLE BUCKET
-    def solve_single_bucket(self, H, S, theta, bucket_inflow):
+    def solve_single_bucket(self, H, S, theta_indices, bucket_inflow):
         """ Solves the flow out of a single bucket
             Args:
                 H (tensor): The height of the water in a bucket before computing output
                 S (tensor): The spigot information
-                theta (tensor): The spigot coefficient
+                theta_indices (tensor): The spigot coefficient indexes
                 bucket_inflow (tensor): The mass that has gone into the bucket before computing output
             Returns:
                 H (tensor): The new height of the water in a bucket
@@ -135,7 +175,8 @@ class NashCascadeNetwork():
         # Initialize s_q as a tensor with zeros
         s_q_local = torch.zeros(n_spigots).clone()
 
-        for i, (S_i, theta_i) in enumerate(zip(S, theta)):
+        for i, (S_i, theta_i) in enumerate(zip(S, self.theta[theta_indices])):
+
             sp_h, sp_a = S_i
 
             # Here we don't want to use the full H, but we actually want to integrate from H_(t-1) to H_t
@@ -192,27 +233,71 @@ class NashCascadeNetwork():
             inflows.append(i_bucket_q + precip_inflow_per_bucket)
 
         return torch.tensor(inflows, requires_grad=True)
+        
+    # ___________________________________________________
+    ## Get the theta index, which is the number of upstream layers, buckets and spigots
+    def get_theta_indices_for_bucket(self, ilayer, ibucket):
+        """Compute the indices in self.theta for the given ilayer and ibucket."""
+        
+        # For layers before the current layer
+        preceding_layers_sum = sum(self.bpl[i] * self.get_n_spigots_in_layer_buckets(i) for i in range(ilayer))
+        
+        # For the starting spigot of the current bucket in the current layer
+        start_index = preceding_layers_sum + ibucket * self.get_n_spigots_in_layer_buckets(ilayer)
+        
+        # Number of spigots in the current bucket
+        n_spigots = self.get_n_spigots_in_layer_buckets(ilayer)
+        
+        # Create a list of indices for the thetas corresponding to the spigots of the current bucket
+        indices = list(range(start_index, start_index + n_spigots))
+        
+        return indices
 
     # ___________________________________________________
     ## UPDATE FUNCTION FOR ONE SINGLE TIME STEP
-    def update_network(self):
+    def forward(self):
         """ Updates all the buckets with the inflow from other buckets, outflow and input from precip
         """
+
+        if self.do_predict_theta_with_lstm:
+            # Prepare LSTM inputs
+            H_tensor = self.get_the_H_tensor()
+            u_sequence = self.precip_seq_into_network_at_update
+            u_sequence_2d = u_sequence.view(1, -1)
+            H_tensor_2d = H_tensor.view(1, -1)
+            H_tensor_repeated = H_tensor_2d.repeat(u_sequence_2d.size(0), 1)
+            lstm_input = torch.cat((H_tensor_repeated, u_sequence_2d), dim=1)
+            
+            # Ensure lstm_input is [1, sequence_length, input_size]
+            lstm_input = lstm_input.unsqueeze(0)
+            
+            # Pass through LSTM
+            lstm_output, (hidden, cell) = self.lstm(lstm_input, self.hidden)
+            lstm_output = self.linear(lstm_output)  # Get the last time step output for the linear layer
+            lstm_output = self.sigmoid(lstm_output)  # Apply the sigmoid activation
+            # Post-process LSTM output to match the shape of self.theta
+            # Assuming lstm_output is [1, sequence_length, hidden_size] and self.theta is [hidden_size]
+            lstm_output = lstm_output.squeeze(0)  # remove batch dimension
+            self.theta = lstm_output[-1]  # take the last timestep
+        
         for ilayer in list(self.network.keys()):
 
             inflows = self.solve_layer_inflows(ilayer)
 
             s_q_local = self.network[ilayer]["s_q"].clone()
 
-            for ibucket in range(len(self.network[ilayer]["H"])):
-                H_local_in = self.network[ilayer]["H"][ibucket].clone()
-                S_local_in = self.network[ilayer]["S"][ibucket].clone()
-                theta_local_in = self.theta[ilayer][ibucket].clone()
+            number_of_ilayer_buckets = self.network[ilayer]["H"].shape[0]
+            for ibucket in range(number_of_ilayer_buckets):
+                H_local_in = self.network[ilayer]["H"][ibucket]
+                S_local_in = self.network[ilayer]["S"][ibucket]
+
+                theta_indices = self.get_theta_indices_for_bucket(ilayer, ibucket)
+#                theta_local_in = self.theta[theta_indices]
 
                 single_bucket_inflow = inflows[ibucket]
-                H_local_out, s_q_out = self.solve_single_bucket(H_local_in, S_local_in, theta_local_in, single_bucket_inflow)
+                H_local_out, s_q_out = self.solve_single_bucket(H_local_in, S_local_in, theta_indices, single_bucket_inflow)
 
-                self.network[ilayer]["H"][ibucket] = H_local_out  # Assuming H is a scalar or this assignment is correct
+                self.network[ilayer]["H"][ibucket] = H_local_out 
 
                 s_q_local[ibucket] = s_q_out
 
@@ -258,6 +343,8 @@ class NashCascadeNetwork():
         """
         if name == "atmosphere_water__liquid_equivalent_precipitation_rate":            
             self.precip_into_network_at_update = torch.sum(src)
+        if name == "atmosphere_water__liquid_equivalent_precipitation_rate_seq":
+            self.precip_seq_into_network_at_update = src
 
     # ___________________________________________________
     ## NUMBER OF SPIGOTS FOR EACH BUCKET IN NETWORK LAYER
@@ -305,15 +392,40 @@ class NashCascadeNetwork():
         print(f"Mass balance for network is {mass_balance:.3f}")
 
     # ________________________________________________
+    # Get the bucket heights into a single tensor
+    def get_the_H_tensor(self):
+        H_list = []
+        for i in list(self.network.keys()):
+            H_list.extend(list(self.network[i]['H']))
+        H_tensor = torch.tensor(H_list)
+        return H_tensor
+
+    # ________________________________________________
     # Forward 
-    def run_ncn_sequence(self, u):
-        N_TIMESTEPS = u.shape[0]
+    def run_ncn_sequence(self, u, START_u=0):
+
+        END_u = u.shape[0]
         y_pred_list = []
-        for i in range(N_TIMESTEPS):
+        for i in range(START_u, END_u):
             self.set_value(PRECIP_SVN, u[i])
-            self.update_network()
+
+            if self.do_predict_theta_with_lstm:
+                if i >= self.input_u_sequence_length:
+                    # If 'i' is large enough, simply take the required sequence from 'u'
+                    sequence = u[i-self.input_u_sequence_length:i]
+                else:
+                    # If 'i' is too small, pad 'u' up to 'i' with zeros at the beginning
+                    padding_size = self.input_u_sequence_length - i
+                    padding = u.new_zeros((padding_size,))
+                    sequence = torch.cat((padding, u[:i]), dim=0)
+                self.set_value(PRECIP_SVN_SEQ, sequence)
+
+            self.forward()
+
             y_pred_list.append(self.network_outflow)
+
         y_pred = torch.stack(y_pred_list)
+
         return y_pred
     
     # ________________________________________________
@@ -327,7 +439,6 @@ class NashCascadeNetwork():
             for j in list(self.network[layer].keys()):
                 self.network[layer][j] = self.network[layer][j].detach()
         self.inital_mass_in_network = self.inital_mass_in_network.detach()
-        self.G = self.G.detach()
 
 # -----------------------------------------------------------------------#
 # -----------------------------------------------------------------------#
@@ -339,8 +450,9 @@ class NashCascadeNetwork():
 # -----------------------------------------------------------------------#
 if __name__ == "__main__":
     PRECIP_SVN = "atmosphere_water__liquid_equivalent_precipitation_rate"
+    PRECIP_SVN_SEQ = "atmosphere_water__liquid_equivalent_precipitation_rate_seq"
     DO_PLOT = False
-    N_TIMESTEPS = 1
+    N_TIMESTEPS = 5
     network_precip_input_list = []
     count = 0
     for i in range(N_TIMESTEPS):
@@ -352,7 +464,7 @@ if __name__ == "__main__":
         if count == 50:
             count = 0
         count+=1
-    network_precip_tensor = torch.tensor(network_precip_input_list, requires_grad=True)
+    network_precip_tensor = torch.tensor(network_precip_input_list, requires_grad=False)
     total_mass_precip_in = torch.sum(network_precip_tensor)
     ###########################################################################
 
