@@ -38,6 +38,7 @@ class NashCascadeNetwork(nn.Module):
             self.lstm_hidden_size = self.theta.numel()  # Set according to your needs
             self.lstm_num_layers = 2    # Number of LSTM layers
             self.initialize_LSTM()
+        self.first_lstm_prediction = True
 
     # ___________________________________________________
     ## INITIALIZE THE LSTM
@@ -62,9 +63,11 @@ class NashCascadeNetwork(nn.Module):
         )
 
         # Initialize hidden state and cell state
-        self.hidden = (torch.zeros(self.lstm_num_layers, 1, self.lstm_hidden_size),
+        self.zerostates = (torch.zeros(self.lstm_num_layers, 1, self.lstm_hidden_size),
                        torch.zeros(self.lstm_num_layers, 1, self.lstm_hidden_size))
-
+        self.states = (torch.zeros(self.lstm_num_layers, 1, self.lstm_hidden_size),
+                       torch.zeros(self.lstm_num_layers, 1, self.lstm_hidden_size))
+        
     # ___________________________________________________
     ## CONFIGURATIONS read in from json file
     def config_from_json(self):
@@ -178,19 +181,31 @@ class NashCascadeNetwork(nn.Module):
             # Here we don't want to use the full H, but we actually want to integrate from H_(t-1) to H_t
             # But we can't know H_t unless we run the calculation.
             # So unless we iterate, we can't really solve this.
-            h = torch.max(torch.tensor(0.0), H_effective - sp_h)
+            h = torch.max(torch.tensor(0.0), (H_effective - sp_h))
             v = theta_i * torch.sqrt(2 * self.G * h)
             flow_out = v * sp_a
             
             # Directly assign the value to the tensor
             s_q_local[i] = flow_out
 
-            # But for the lower spigots, we can simplify to calculate v as a function of half the head lost from previous spigots
+            # But for the lower spigots, we can simplify to calculate the head lost from previous spigots
             H_effective = H_initial_local - torch.sum(s_q_local[:i+1]) / 2
 
-        # Then we need to add the inflow and subtract out the total lost head
+        # Ensure that H_final is not less than zero
+        if (torch.sum(s_q_local) + bucket_inflow) > H_initial_local:
+            if (torch.sum(s_q_local) + bucket_inflow) < 0.01:
+                s_q_local = s_q_local * 0
+            else:
+                multiplier = H_initial_local / (torch.sum(s_q_local) + bucket_inflow)
+                s_q_local = s_q_local * multiplier
+
         H_final = H_initial_local - torch.sum(s_q_local) + bucket_inflow
-        
+
+        if H_final < -0.001:
+            print("---------------WARNING---------------")
+            print("H_final is leq zero", H_final)
+            print("s_q_local is", s_q_local)
+
         return H_final, s_q_local
 
     # ___________________________________________________
@@ -268,7 +283,11 @@ class NashCascadeNetwork(nn.Module):
             lstm_input = lstm_input.unsqueeze(0)
             
             # Pass through LSTM
-            lstm_output, (hidden, cell) = self.lstm(lstm_input, self.hidden)
+            # if self.first_lstm_prediction:
+            #     lstm_output, self.states = self.lstm(lstm_input, self.zerostates)
+            # else:
+            #     lstm_output, self.states = self.lstm(lstm_input, self.states)
+            lstm_output, self.states = self.lstm(lstm_input, self.zerostates)
             lstm_output = self.linear(lstm_output)  # Get the last time step output for the linear layer
             lstm_output = self.sigmoid(lstm_output)  # Apply the sigmoid activation
             # Post-process LSTM output to match the shape of self.theta
@@ -305,6 +324,8 @@ class NashCascadeNetwork(nn.Module):
 
         self.precipitation_mass_into_network += self.precip_into_network_at_update
         self.mass_out_of_netowork += self.network_outflow
+
+        self.first_lstm_prediction = False
 
     # ___________________________________________________
     ## SUMMARIZE THE MASS HEIGHTS ACROSS NETWORK LAYER

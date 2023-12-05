@@ -3,12 +3,12 @@
   "initial_head_in_buckets": 5, 
   "bpl": [
     1,
-    10,
-    5,
-    1
+    3,
+    3,
+    3
   ],
- "range_of_theta_values": [0.24, 0.25],
- "precip_distribution": "upstream",
+ "range_of_theta_values": [0.1, 0.25],
+ "precip_distribution": "even",
  "do_predict_theta_with_lstm": "False",
  "seed": 0
 }

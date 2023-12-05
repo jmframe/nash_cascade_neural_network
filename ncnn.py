@@ -70,7 +70,7 @@ def train_model(model, u, y_true):
     # Create the optimizer instance with the combined parameter list
     optimizer = optim.SGD(all_params, lr=model.learning_rate)
 
-    scheduler = StepLR(optimizer, step_size=10, gamma=0.9)
+    scheduler = StepLR(optimizer, step_size=2, gamma=0.75, verbose=True)
 
     for epoch in range(model.epochs):
 
@@ -89,6 +89,8 @@ def train_model(model, u, y_true):
         print(f"loss: {loss:.4f}")#, theta: {model.ncn.theta}")
 
         model.ncn.detach_ncn_from_graph()
+
+        model.ncn.first_lstm_prediction = True
 
         scheduler.step()
 
