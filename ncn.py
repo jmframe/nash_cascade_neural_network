@@ -26,6 +26,7 @@ class NashCascadeNetwork(nn.Module):
         self.cfg_file = cfg_file
         self.verbose = verbose
         self.G = 9.8
+        self.unit_precip = 6.0
 
     # BMI: Model Control Function
     # ___________________________________________________
@@ -50,7 +51,7 @@ class NashCascadeNetwork(nn.Module):
             LSTM Target: self.theta
         """
         # Assuming self.H_tensor and self.theta are already initialized elsewhere
-        H_tensor = self.get_the_H_tensor()
+        H_tensor = self.get_the_H_tensor(normalize=True)
         self.input_u_sequence_length = self.n_network_layers + 1
 
         # Assuming input to the model u is of shape [sequence_length, batch_size, features]
@@ -173,12 +174,12 @@ class NashCascadeNetwork(nn.Module):
                 H (tensor): The new height of the water in a bucket
                 s_q (tensor): Flow out of each spigot of the bucket
         """
-        H_initial_local = H.clone()
+        H_initial_local = H
         H_effective = H_initial_local + bucket_inflow
         n_spigots = S.shape[0]
         
         # Initialize s_q as a tensor with zeros
-        s_q_local = torch.zeros(n_spigots).clone()
+        s_q_local = torch.zeros(n_spigots)
 
         for i, (S_i, theta_i) in enumerate(zip(S, self.theta[theta_indices])):
 
@@ -197,8 +198,25 @@ class NashCascadeNetwork(nn.Module):
             # But for the lower spigots, we can simplify to calculate v as a function of half the head lost from previous spigots
             H_effective = H_initial_local - torch.sum(s_q_local[:i+1]) / 2
 
-        # Then we need to add the inflow and subtract out the total lost head
+        # Ensure that the denominator is not zero to avoid division by zero
+        denominator = torch.sum(s_q_local)
+        denominator = torch.where(denominator == 0, torch.tensor(1.0), denominator)
+
+        # Calculate the multiplier
+        multiplier = torch.min(torch.tensor(1.0), (H_initial_local + bucket_inflow) / denominator)
+
+        # Ensure the multiplier is on the same device as the other tensors (e.g., GPU if they are on GPU)
+        multiplier = multiplier.to(H_initial_local.device)
+
+        s_q_local = s_q_local * multiplier
+
         H_final = H_initial_local - torch.sum(s_q_local) + bucket_inflow
+        H_final = torch.clamp(H_final, min=0)
+
+        if H_final < -0.001:
+            print("---------------WARNING---------------")
+            print("H_final is leq zero", H_final)
+            print("s_q_local is", s_q_local)
         
         return H_final, s_q_local
 
@@ -259,25 +277,39 @@ class NashCascadeNetwork(nn.Module):
         return indices
 
     # ___________________________________________________
+    ## PREPARE LSTM INPUTS
+    def prepare_lstm_inputs(self):
+        H_tensor = self.get_the_H_tensor(normalize=True)
+        print("H_tensor",H_tensor)
+
+        # Normalize the precipitation sequence
+        u_sequence = self.precip_seq_into_network_at_update / self.unit_precip
+
+        # Reshape the sequences
+        u_sequence_2d = u_sequence.view(1, -1)
+        H_tensor_2d = H_tensor.view(1, -1)
+
+        # Repeat H_tensor to match the size of u_sequence
+        H_tensor_repeated = H_tensor_2d.repeat(u_sequence_2d.size(0), 1)
+
+        # Concatenate H_tensor and normalized u_sequence
+        lstm_input = torch.cat((H_tensor_repeated, u_sequence_2d), dim=1)
+
+        # Ensure lstm_input is [1, sequence_length, input_size]
+        lstm_input = lstm_input.unsqueeze(0)
+
+        return lstm_input
+
+    # ___________________________________________________
     ## UPDATE FUNCTION FOR ONE SINGLE TIME STEP
     def update(self):
         """ Updates all the buckets with the inflow from other buckets, outflow and input from precip
         """
 
         if self.do_predict_theta_with_lstm:
-            # Prepare LSTM inputs
-            H_tensor = self.get_the_H_tensor()
-            u_sequence = self.precip_seq_into_network_at_update
-            u_sequence_2d = u_sequence.view(1, -1)
-            H_tensor_2d = H_tensor.view(1, -1)
-            H_tensor_repeated = H_tensor_2d.repeat(u_sequence_2d.size(0), 1)
-            lstm_input = torch.cat((H_tensor_repeated, u_sequence_2d), dim=1)
-            
-            # Ensure lstm_input is [1, sequence_length, input_size]
-            lstm_input = lstm_input.unsqueeze(0)
-            
+            lstm_input = self.prepare_lstm_inputs()
             # Pass through LSTM
-            lstm_output, (hidden, cell) = self.lstm(lstm_input, self.hidden)
+            lstm_output, _ = self.lstm(lstm_input)
 #            lstm_output = self.linear(lstm_output)  # Get the last time step output for the linear layer
             lstm_output = self.sigmoid(lstm_output)  # Apply the sigmoid activation
             # Post-process LSTM output to match the shape of self.theta
@@ -292,7 +324,7 @@ class NashCascadeNetwork(nn.Module):
 
             inflows = self.solve_layer_inflows(ilayer)
 
-            s_q_local = self.network[ilayer]["s_q"].clone()
+            s_q_local = self.network[ilayer]["s_q"]
 
             number_of_ilayer_buckets = self.network[ilayer]["H"].shape[0]
             for ibucket in range(number_of_ilayer_buckets):
@@ -300,7 +332,6 @@ class NashCascadeNetwork(nn.Module):
                 S_local_in = self.network[ilayer]["S"][ibucket]
 
                 theta_indices = self.get_theta_indices_for_bucket(ilayer, ibucket)
-#                theta_local_in = self.theta[theta_indices]
 
                 single_bucket_inflow = inflows[ibucket]
                 H_local_out, s_q_out = self.solve_single_bucket(H_local_in, S_local_in, theta_indices, single_bucket_inflow)
@@ -397,11 +428,13 @@ class NashCascadeNetwork(nn.Module):
 
     # ________________________________________________
     # Get the bucket heights into a single tensor
-    def get_the_H_tensor(self):
+    def get_the_H_tensor(self, normalize=False):
         H_list = []
         for i in list(self.network.keys()):
             H_list.extend(list(self.network[i]['H']))
         H_tensor = torch.tensor(H_list)
+        if normalize:
+            H_tensor = H_tensor / 10.0
         return H_tensor
 
     # ________________________________________________
@@ -462,7 +495,7 @@ def train_model(model, u, y_true):
             y_true (tensor): true predictions
 
     """
-    model.set_value(PRECIP_RECORD, torch.tensor(u, requires_grad=False))
+    model.set_value(PRECIP_RECORD, u.clone().detach())
 
     model.do_initialize_random_theta_values = False
     
