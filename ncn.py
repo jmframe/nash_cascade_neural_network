@@ -39,24 +39,18 @@ class NashCascadeNetwork(nn.Module):
         self.precip_into_network_at_update = torch.tensor(0.0, dtype=torch.float, requires_grad=False)
         self.reset_volume_tracking()
         if self.do_predict_theta_with_lstm:
-            self.lstm_hidden_size = self.theta.numel()  # Set according to your needs
-            self.lstm_num_layers = 4    # Number of LSTM layers
+            self.lstm_hidden_size = 3#self.theta.numel()  # Set according to your needs
+            self.lstm_num_layers = 3    # Number of LSTM layers
             self.initialize_LSTM()
 
     # ___________________________________________________
     ## INITIALIZE THE LSTM
     def initialize_LSTM(self):
-        """ Sets up an LSTM that will predict the theta values at each time step
-            LSTM Inputs: H_tensor & u[i-input_sequence_length:i]
-            LSTM Target: self.theta
-        """
-        # Assuming self.H_tensor and self.theta are already initialized elsewhere
         H_tensor = self.get_the_H_tensor(normalize=True)
         self.input_u_sequence_length = self.n_network_layers + 1
 
-        # Assuming input to the model u is of shape [sequence_length, batch_size, features]
-        # LSTM input size is the size of H_tensor plus the number of features in u
-        lstm_input_size = H_tensor.numel() + self.input_u_sequence_length  # Here we're assuming u has a single feature dimension
+        # LSTM input size is the size of H_tensor plus one for u
+        lstm_input_size = H_tensor.numel() + 1  # Adding one for the u feature
         self.linear = nn.Linear(self.lstm_hidden_size, self.theta.numel())
         self.sigmoid = nn.Sigmoid()
         self.lstm = nn.LSTM(
@@ -67,7 +61,7 @@ class NashCascadeNetwork(nn.Module):
 
         # Initialize hidden state and cell state
         self.hidden = (torch.zeros(self.lstm_num_layers, 1, self.lstm_hidden_size),
-                       torch.zeros(self.lstm_num_layers, 1, self.lstm_hidden_size))
+                    torch.zeros(self.lstm_num_layers, 1, self.lstm_hidden_size))
 
     # ___________________________________________________
     ## CONFIGURATIONS read in from json file
@@ -280,24 +274,20 @@ class NashCascadeNetwork(nn.Module):
     ## PREPARE LSTM INPUTS
     def prepare_lstm_inputs(self):
         H_tensor = self.get_the_H_tensor(normalize=True)
-        print("H_tensor",H_tensor)
-
         # Normalize the precipitation sequence
         u_sequence = self.precip_seq_into_network_at_update / self.unit_precip
-
-        # Reshape the sequences
-        u_sequence_2d = u_sequence.view(1, -1)
+        # Ensure u_sequence is a 1D tensor [sequence_length]
+        u_sequence_1d = u_sequence.view(-1)
+        # Reshape H_tensor to [1, number_of_features]
         H_tensor_2d = H_tensor.view(1, -1)
-
-        # Repeat H_tensor to match the size of u_sequence
-        H_tensor_repeated = H_tensor_2d.repeat(u_sequence_2d.size(0), 1)
-
-        # Concatenate H_tensor and normalized u_sequence
-        lstm_input = torch.cat((H_tensor_repeated, u_sequence_2d), dim=1)
-
-        # Ensure lstm_input is [1, sequence_length, input_size]
-        lstm_input = lstm_input.unsqueeze(0)
-
+        # Repeat H_tensor for each time step in u_sequence
+        H_tensor_repeated = H_tensor_2d.repeat(u_sequence_1d.size(0), 1)
+        # Reshape u_sequence to [sequence_length, 1]
+        u_sequence_2d = u_sequence_1d.unsqueeze(1)
+        # Concatenate u_sequence with H_tensor_repeated
+        lstm_input = torch.cat((u_sequence_2d, H_tensor_repeated), dim=1)
+        # Ensure lstm_input is [sequence_length, 1, input_size]
+        lstm_input = lstm_input.view(u_sequence_1d.size(0), 1, -1)
         return lstm_input
 
     # ___________________________________________________
@@ -310,12 +300,12 @@ class NashCascadeNetwork(nn.Module):
             lstm_input = self.prepare_lstm_inputs()
             # Pass through LSTM
             lstm_output, _ = self.lstm(lstm_input)
-#            lstm_output = self.linear(lstm_output)  # Get the last time step output for the linear layer
+            lstm_output = self.linear(lstm_output)  # Get the last time step output for the linear layer
             lstm_output = self.sigmoid(lstm_output)  # Apply the sigmoid activation
             # Post-process LSTM output to match the shape of self.theta
             # Assuming lstm_output is [1, sequence_length, hidden_size] and self.theta is [hidden_size]
             lstm_output = lstm_output.squeeze(0)  # remove batch dimension
-            self.theta = lstm_output[-1]  # take the last timestep
+            self.theta = lstm_output[-1][0]  # take the last timestep
 
             lstm_output.retain_grad()
             self.lstm_output = lstm_output
@@ -530,8 +520,8 @@ def train_model(model, u, y_true):
 
         print(f"loss: {loss:.4f}------------")
         print(f"theta: {model.theta}")
-        print("model.lstm_output.grad")
-        print(model.lstm_output.grad)
+        print("model.lstm_output.grad[-1][0]")
+        print(model.lstm_output.grad[-1][0])
 
         model.detach_ncn_from_graph()
 
