@@ -11,10 +11,13 @@
 import torch
 import json
 import torch.nn as nn
+import torch.optim as optim
+from torch.optim.lr_scheduler import StepLR
 
 G = 9.81
 PRECIP_SVN = "atmosphere_water__liquid_equivalent_precipitation_rate"
 PRECIP_SVN_SEQ = "atmosphere_water__liquid_equivalent_precipitation_rate_seq"
+PRECIP_RECORD = "atmosphere_water__liquid_equivalent_precipitation_rate_record"
 
 class NashCascadeNetwork(nn.Module):
 
@@ -27,7 +30,7 @@ class NashCascadeNetwork(nn.Module):
     # BMI: Model Control Function
     # ___________________________________________________
     ## INITIALIZATION as required by BMI
-    def initialize(self, initialize_LSTM = True):
+    def initialize(self):
         # ________________________________________________________ #
         # GET VALUES FROM CONFIGURATION FILE.                      #
         self.config_from_json()
@@ -36,9 +39,8 @@ class NashCascadeNetwork(nn.Module):
         self.reset_volume_tracking()
         if self.do_predict_theta_with_lstm:
             self.lstm_hidden_size = self.theta.numel()  # Set according to your needs
-            self.lstm_num_layers = 2    # Number of LSTM layers
+            self.lstm_num_layers = 4    # Number of LSTM layers
             self.initialize_LSTM()
-        self.first_lstm_prediction = True
 
     # ___________________________________________________
     ## INITIALIZE THE LSTM
@@ -63,11 +65,9 @@ class NashCascadeNetwork(nn.Module):
         )
 
         # Initialize hidden state and cell state
-        self.zerostates = (torch.zeros(self.lstm_num_layers, 1, self.lstm_hidden_size),
+        self.hidden = (torch.zeros(self.lstm_num_layers, 1, self.lstm_hidden_size),
                        torch.zeros(self.lstm_num_layers, 1, self.lstm_hidden_size))
-        self.states = (torch.zeros(self.lstm_num_layers, 1, self.lstm_hidden_size),
-                       torch.zeros(self.lstm_num_layers, 1, self.lstm_hidden_size))
-        
+
     # ___________________________________________________
     ## CONFIGURATIONS read in from json file
     def config_from_json(self):
@@ -79,22 +79,28 @@ class NashCascadeNetwork(nn.Module):
         self.range_of_theta_values = cfg_loaded['range_of_theta_values']
         self.initial_head_in_buckets = cfg_loaded['initial_head_in_buckets']
         self.precip_distribution = cfg_loaded['precip_distribution']
-        # Have to specificy explicitly if the thetat values should not be set.
-        if 'do_initialize_random_theta_values' in list(cfg_loaded.keys()):
-            if cfg_loaded['do_initialize_random_theta_values'] == "False":
-                self.do_initialize_random_theta_values = False
-            else:
-                self.do_initialize_random_theta_values = True
+        torch.cuda.manual_seed(cfg_loaded['seed'])
+        torch.manual_seed(cfg_loaded['seed'])
+        if cfg_loaded['verbose'] == "True":
+            self.verbose = True
         else:
+            self.verbose = False
+        if cfg_loaded['do_initialize_random_theta_values'] == "True":
             self.do_initialize_random_theta_values = True
-        # Have to specificy explicitly that we want to use an LSTM to predict Theta.
-        if 'do_predict_theta_with_lstm' in list(cfg_loaded.keys()):
-            if cfg_loaded['do_predict_theta_with_lstm'] == "True":
-                self.do_predict_theta_with_lstm = True
-            else:
-                self.do_predict_theta_with_lstm = False
+        else:
+            self.do_initialize_random_theta_values = False
+        if cfg_loaded['do_predict_theta_with_lstm'] == "True":
+            self.do_predict_theta_with_lstm = True
         else:
             self.do_predict_theta_with_lstm = False
+
+        self.model_type = cfg_loaded['model_type']
+        #-----------------------------------------------------------#
+        if self.model_type == "NCNN":
+            self.train_learning_rate = cfg_loaded['train_learning_rate']
+            self.train_lr_step_size = cfg_loaded['train_lr_step_size']
+            self.train_lr_gamma = cfg_loaded['train_lr_gamma']
+            self.epochs = cfg_loaded['epochs']
 
     # ___________________________________________________
     ## PARAMETER INITIALIZATION
@@ -181,31 +187,19 @@ class NashCascadeNetwork(nn.Module):
             # Here we don't want to use the full H, but we actually want to integrate from H_(t-1) to H_t
             # But we can't know H_t unless we run the calculation.
             # So unless we iterate, we can't really solve this.
-            h = torch.max(torch.tensor(0.0), (H_effective - sp_h))
+            h = torch.max(torch.tensor(0.0), H_effective - sp_h)
             v = theta_i * torch.sqrt(2 * self.G * h)
             flow_out = v * sp_a
             
             # Directly assign the value to the tensor
             s_q_local[i] = flow_out
 
-            # But for the lower spigots, we can simplify to calculate the head lost from previous spigots
+            # But for the lower spigots, we can simplify to calculate v as a function of half the head lost from previous spigots
             H_effective = H_initial_local - torch.sum(s_q_local[:i+1]) / 2
 
-        # Ensure that H_final is not less than zero
-        if (torch.sum(s_q_local) + bucket_inflow) > H_initial_local:
-            if (torch.sum(s_q_local) + bucket_inflow) < 0.01:
-                s_q_local = s_q_local * 0
-            else:
-                multiplier = H_initial_local / (torch.sum(s_q_local) + bucket_inflow)
-                s_q_local = s_q_local * multiplier
-
+        # Then we need to add the inflow and subtract out the total lost head
         H_final = H_initial_local - torch.sum(s_q_local) + bucket_inflow
-
-        if H_final < -0.001:
-            print("---------------WARNING---------------")
-            print("H_final is leq zero", H_final)
-            print("s_q_local is", s_q_local)
-
+        
         return H_final, s_q_local
 
     # ___________________________________________________
@@ -266,7 +260,7 @@ class NashCascadeNetwork(nn.Module):
 
     # ___________________________________________________
     ## UPDATE FUNCTION FOR ONE SINGLE TIME STEP
-    def forward(self):
+    def update(self):
         """ Updates all the buckets with the inflow from other buckets, outflow and input from precip
         """
 
@@ -283,18 +277,16 @@ class NashCascadeNetwork(nn.Module):
             lstm_input = lstm_input.unsqueeze(0)
             
             # Pass through LSTM
-            # if self.first_lstm_prediction:
-            #     lstm_output, self.states = self.lstm(lstm_input, self.zerostates)
-            # else:
-            #     lstm_output, self.states = self.lstm(lstm_input, self.states)
-            lstm_output, self.states = self.lstm(lstm_input, self.zerostates)
-            lstm_output = self.linear(lstm_output)  # Get the last time step output for the linear layer
+            lstm_output, (hidden, cell) = self.lstm(lstm_input, self.hidden)
+#            lstm_output = self.linear(lstm_output)  # Get the last time step output for the linear layer
             lstm_output = self.sigmoid(lstm_output)  # Apply the sigmoid activation
             # Post-process LSTM output to match the shape of self.theta
             # Assuming lstm_output is [1, sequence_length, hidden_size] and self.theta is [hidden_size]
             lstm_output = lstm_output.squeeze(0)  # remove batch dimension
             self.theta = lstm_output[-1]  # take the last timestep
-#            print(self.theta)
+
+            lstm_output.retain_grad()
+            self.lstm_output = lstm_output
         
         for ilayer in list(self.network.keys()):
 
@@ -324,8 +316,6 @@ class NashCascadeNetwork(nn.Module):
 
         self.precipitation_mass_into_network += self.precip_into_network_at_update
         self.mass_out_of_netowork += self.network_outflow
-
-        self.first_lstm_prediction = False
 
     # ___________________________________________________
     ## SUMMARIZE THE MASS HEIGHTS ACROSS NETWORK LAYER
@@ -363,6 +353,8 @@ class NashCascadeNetwork(nn.Module):
             self.precip_into_network_at_update = torch.sum(src)
         if name == "atmosphere_water__liquid_equivalent_precipitation_rate_seq":
             self.precip_seq_into_network_at_update = src
+        if name == "atmosphere_water__liquid_equivalent_precipitation_rate_record":
+            self.precip_record = src
 
     # ___________________________________________________
     ## NUMBER OF SPIGOTS FOR EACH BUCKET IN NETWORK LAYER
@@ -413,26 +405,32 @@ class NashCascadeNetwork(nn.Module):
         return H_tensor
 
     # ________________________________________________
-    # Forward 
-    def run_ncn_sequence(self, u, START_u=0):
+    # SET SEQUENCE PRECIP
+    def set_sequence_precip(self, u, i):
+        if self.do_predict_theta_with_lstm:
+            if i >= self.input_u_sequence_length:
+                # If 'i' is large enough, simply take the required sequence from 'u'
+                sequence = u[i-self.input_u_sequence_length:i]
+            else:
+                # If 'i' is too small, pad 'u' up to 'i' with zeros at the beginning
+                padding_size = self.input_u_sequence_length - i
+                padding = u.new_zeros((padding_size,))
+                sequence = torch.cat((padding, u[:i]), dim=0)
+            self.set_value(PRECIP_SVN_SEQ, sequence)
 
+    # ________________________________________________
+    # Forward 
+    def forward(self):
+
+        u = self.precip_record
         END_u = u.shape[0]
         y_pred_list = []
-        for i in range(START_u, END_u):
+        for i in range(END_u):
             self.set_value(PRECIP_SVN, u[i])
 
-            if self.do_predict_theta_with_lstm:
-                if i >= self.input_u_sequence_length:
-                    # If 'i' is large enough, simply take the required sequence from 'u'
-                    sequence = u[i-self.input_u_sequence_length:i]
-                else:
-                    # If 'i' is too small, pad 'u' up to 'i' with zeros at the beginning
-                    padding_size = self.input_u_sequence_length - i
-                    padding = u.new_zeros((padding_size,))
-                    sequence = torch.cat((padding, u[:i]), dim=0)
-                self.set_value(PRECIP_SVN_SEQ, sequence)
+            self.set_sequence_precip(u, i)
 
-            self.forward()
+            self.update()
 
             y_pred_list.append(self.network_outflow)
 
@@ -451,6 +449,66 @@ class NashCascadeNetwork(nn.Module):
             for j in list(self.network[layer].keys()):
                 self.network[layer][j] = self.network[layer][j].detach()
         self.inital_mass_in_network = self.inital_mass_in_network.detach()
+
+
+
+# ___________________________________________________
+## PARAMETER TUNING
+def train_model(model, u, y_true):
+    """ This function is used to update the theta values to minimize the loss function
+        Args:
+            model (ncnn): NashCascadeNeuralNetwork
+            u (tensor): precipitation input
+            y_true (tensor): true predictions
+
+    """
+    model.set_value(PRECIP_RECORD, torch.tensor(u, requires_grad=False))
+
+    model.do_initialize_random_theta_values = False
+    
+    # Instantiate the loss function
+    criterion = nn.MSELoss()
+    # We will collect all parameters from both the LSTM and Linear layer for optimization
+    lstm_params = model.lstm.parameters()
+    linear_params = model.linear.parameters()
+    # Combine all parameters into a single list
+    all_params = list(lstm_params) + list(linear_params)
+
+    # Create the optimizer instance with the combined parameter list
+    optimizer = optim.SGD(all_params, lr=model.train_learning_rate)
+
+    scheduler = StepLR(optimizer, step_size=model.train_lr_step_size, gamma=model.train_lr_gamma, verbose=True)
+
+    for epoch in range(model.epochs):
+
+#        model.initialize_up_bucket_network()
+
+        optimizer.zero_grad()
+
+        # FORWARD PASS OF THE MODEL
+        y_pred = model.forward()
+
+        start_criterion = int(y_pred.shape[0]/2)
+        loss = criterion(y_pred[start_criterion:], y_true[start_criterion:])
+
+        loss.backward() # run backpropagation
+
+        optimizer.step() # update the parameters, just like w -= learning_rate * w.grad
+
+        print(f"loss: {loss:.4f}------------")
+        print(f"theta: {model.theta}")
+        print("model.lstm_output.grad")
+        print(model.lstm_output.grad)
+
+        model.detach_ncn_from_graph()
+
+        model.first_lstm_prediction = True
+
+        scheduler.step()
+
+    return y_pred, loss
+
+
 
 # -----------------------------------------------------------------------#
 # -----------------------------------------------------------------------#
