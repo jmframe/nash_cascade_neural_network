@@ -9,7 +9,7 @@
     3,
     1
   ],
- "range_of_theta_values": [0.19, 0.21],
+ "range_of_theta_values": [0.15, 0.45],
  "precip_distribution": "upstream",
  "do_predict_theta_with_lstm": "False",
  "do_initialize_random_theta_values": "True",

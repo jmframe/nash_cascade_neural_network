@@ -39,15 +39,15 @@ class NashCascadeNetwork(nn.Module):
         self.precip_into_network_at_update = torch.tensor(0.0, dtype=torch.float, requires_grad=False)
         self.reset_volume_tracking()
         if self.do_predict_theta_with_lstm:
-            self.lstm_hidden_size = 3#self.theta.numel()  # Set according to your needs
-            self.lstm_num_layers = 3    # Number of LSTM layers
+            self.lstm_hidden_size = 16  # Set according to your needs
+            self.lstm_num_layers = 1    # Number of LSTM layers
             self.initialize_LSTM()
 
     # ___________________________________________________
     ## INITIALIZE THE LSTM
     def initialize_LSTM(self):
         H_tensor = self.get_the_H_tensor(normalize=True)
-        self.input_u_sequence_length = self.n_network_layers + 1
+        self.input_u_sequence_length = self.n_network_layers * 2
 
         # LSTM input size is the size of H_tensor plus one for u
         lstm_input_size = H_tensor.numel() + 1  # Adding one for the u feature
@@ -542,34 +542,42 @@ def train_model(model, u, y_true):
 # -----------------------------------------------------------------------#
 # -----------------------------------------------------------------------#
 if __name__ == "__main__":
-    PRECIP_SVN = "atmosphere_water__liquid_equivalent_precipitation_rate"
-    PRECIP_SVN_SEQ = "atmosphere_water__liquid_equivalent_precipitation_rate_seq"
-    DO_PLOT = False
-    N_TIMESTEPS = 5
+    N_TIMESTEPS = 1
     network_precip_input_list = []
     count = 0
+    unit_precip = 6.0
     for i in range(N_TIMESTEPS):
         ###########################################################################
-        if count > 39:
-            network_precip_input_list.append(1.0)
+        if i == 0:
+            network_precip_input_list.append(unit_precip)
         else:
             network_precip_input_list.append(0.0)
-        if count == 50:
-            count = 0
-        count+=1
-    network_precip_tensor = torch.tensor(network_precip_input_list, requires_grad=False)
+    network_precip_tensor = torch.tensor(network_precip_input_list)
     total_mass_precip_in = torch.sum(network_precip_tensor)
-    ###########################################################################
+        ###########################################################################
 
     ###########################################################################
     ###########################################################################
     # Example 0
     bucket_net0 = NashCascadeNetwork(cfg_file="./config_0.json")
     bucket_net0.initialize()
+    bucket_net0.set_value(PRECIP_RECORD, torch.tensor(network_precip_input_list, requires_grad=False))
     bucket_net0.summarize_network()
     inital_mass_in_network0 = torch.sum(torch.tensor([tensor.item() for tensor in bucket_net0.sum_H_per_layer]))
-
-    network_outflow_tensor_0 = bucket_net0.run_ncn_sequence(network_precip_tensor)
-
+    network_outflow_tensor_0 = bucket_net0.forward()
     final_mass_in_network0 = torch.sum(torch.stack(bucket_net0.sum_H_per_layer))
     bucket_net0.report_out_mass_balance()
+
+    ###########################################################################
+    ###########################################################################
+    # Train theta values of Network1
+    cfg_file="./config_1.json"
+    bucket_net1 = NashCascadeNetwork(cfg_file=cfg_file)
+    bucket_net1.initialize()
+    bucket_net1.set_value(PRECIP_RECORD, torch.tensor(network_precip_input_list, requires_grad=False))
+    bucket_net1.unit_precip = unit_precip
+    y_pred, loss = train_model(bucket_net1, network_precip_tensor.detach(), network_outflow_tensor_0.detach())
+    bucket_net1.report_out_mass_balance()
+    if N_TIMESTEPS <= 5:
+        from torchviz import make_dot
+        make_dot(loss).view()
