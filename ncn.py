@@ -292,6 +292,46 @@ class NashCascadeNetwork(nn.Module):
 
     # ___________________________________________________
     ## UPDATE FUNCTION FOR ONE SINGLE TIME STEP
+    def solve_buckets_batch(self, H, S, theta_indices, bucket_inflows):
+        """
+        Solves the flow out of multiple buckets simultaneously.
+        Args:
+            H (tensor): Heights of the water in buckets before computing output [n_buckets]
+            S (tensor): The spigot information [n_buckets, n_spigots, 2]
+            theta_indices (tensor): The spigot coefficient indices [n_buckets, n_spigots]
+            bucket_inflows (tensor): The mass that has gone into the buckets before computing output [n_buckets]
+        Returns:
+            H_out (tensor): The new heights of the water in buckets [n_buckets]
+            s_q_out (tensor): Flow out of each spigot of the buckets [n_buckets, n_spigots]
+        """
+        H_initial_local = H.clone()
+        H_effective = H_initial_local + bucket_inflows
+        n_spigots = S.shape[1]
+
+        # Initialize s_q as a tensor with zeros [n_buckets, n_spigots]
+        s_q_local = torch.zeros_like(S[:, :, 0])
+
+        for i in range(n_spigots):
+            sp_h, sp_a = S[:, i, 0], S[:, i, 1]
+            h = torch.max(torch.zeros_like(H_effective), H_effective - sp_h)
+            v = self.theta[theta_indices[:, i]] * torch.sqrt(2 * self.G * h)
+            flow_out = v * sp_a
+            s_q_local[:, i] = flow_out
+            H_effective = H_initial_local - torch.sum(s_q_local[:, :i+1], dim=1) / 2
+
+        # Calculate the multiplier for each bucket
+        denominator = torch.sum(s_q_local, dim=1)
+        denominator = torch.where(denominator == 0, torch.ones_like(denominator), denominator)
+        multiplier = torch.min(torch.ones_like(H_initial_local), (H_initial_local + bucket_inflows) / denominator)
+        s_q_local = s_q_local * multiplier.unsqueeze(1)
+
+        H_final = H_initial_local - torch.sum(s_q_local, dim=1) + bucket_inflows
+        H_final = torch.clamp(H_final, min=0)
+
+        return H_final, s_q_local
+
+    # ___________________________________________________
+    ## UPDATE FUNCTION FOR ONE SINGLE TIME STEP
     def update(self):
         """ Updates all the buckets with the inflow from other buckets, outflow and input from precip
         """
@@ -309,28 +349,26 @@ class NashCascadeNetwork(nn.Module):
 
             lstm_output.retain_grad()
             self.lstm_output = lstm_output
-        
+
+        #---------------------------------------------------------------------------------------------        
         for ilayer in list(self.network.keys()):
-
             inflows = self.solve_layer_inflows(ilayer)
+            inflows_tensor = torch.tensor(inflows, dtype=torch.float32)  # Convert inflows to a tensor
 
-            s_q_local = self.network[ilayer]["s_q"]
+            H_local_in = self.network[ilayer]["H"]
+            S_local_in = self.network[ilayer]["S"]
 
-            number_of_ilayer_buckets = self.network[ilayer]["H"].shape[0]
-            for ibucket in range(number_of_ilayer_buckets):
-                H_local_in = self.network[ilayer]["H"][ibucket]
-                S_local_in = self.network[ilayer]["S"][ibucket]
+            # Get theta indices for all buckets in the layer
+            theta_indices = [self.get_theta_indices_for_bucket(ilayer, ibucket) for ibucket in range(len(H_local_in))]
+            theta_indices = torch.tensor(theta_indices)
 
-                theta_indices = self.get_theta_indices_for_bucket(ilayer, ibucket)
+            # Solve for all buckets in the layer simultaneously
+            H_local_out, s_q_out = self.solve_buckets_batch(H_local_in, S_local_in, theta_indices, inflows_tensor)
 
-                single_bucket_inflow = inflows[ibucket]
-                H_local_out, s_q_out = self.solve_single_bucket(H_local_in, S_local_in, theta_indices, single_bucket_inflow)
+            self.network[ilayer]["H"] = H_local_out
+            self.network[ilayer]["s_q"] = s_q_out
 
-                self.network[ilayer]["H"][ibucket] = H_local_out 
-
-                s_q_local[ibucket] = s_q_out
-
-            self.network[ilayer]["s_q"] = s_q_local
+        #---------------------------------------------------------------------------------------------
 
         network_outflow = torch.sum(self.network[list(self.network.keys())[-1]]["s_q"])
         self.network_outflow = network_outflow
