@@ -4,9 +4,7 @@
   "initial_head_in_buckets": 5, 
   "bpl": [
     1,
-    3,
-    3,
-    3,
+    2,
     1
   ],
  "range_of_theta_values": [0.15, 0.45],

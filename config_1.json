@@ -4,16 +4,16 @@
   "initial_head_in_buckets": 5, 
   "bpl": [
     1,
-    3,
-    5
+    2,
+    1
   ],
  "range_of_theta_values": [0.01, 0.99],
  "precip_distribution": "upstream",
  "do_predict_theta_with_lstm": "True",
  "do_initialize_random_theta_values": "True",
  "seed": 1,
- "train_learning_rate": 10,
- "train_lr_step_size": 1,
+ "train_learning_rate": 0.5,
+ "train_lr_step_size": 3,
  "train_lr_gamma": 0.9,
- "epochs": 2
+ "epochs": 50
 }
