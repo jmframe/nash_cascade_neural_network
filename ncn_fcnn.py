@@ -212,28 +212,14 @@ class NashCascadeNetwork(nn.Module):
         # Calculate flow out
         flow_out = v * S[:, :, 1]  # Flow rate times spigot area
 
-        # Debugging information
-        print(f"Calculated s_q (flow_out) shape: {flow_out.shape}")
-        print(f"Flow out (s_q) tensor: {flow_out}")
-
         return flow_out
 
     # ___________________________________________________
     ## UPDATE THE HEAD IN EACH BUCKET FOR A SINGLE TIMESTEP
-    def update_head_in_buckets(self, H, s_q, bucket_inflows):
+    def update_head_in_buckets(self, H, bucket_inflows, bucket_outflows):
         # Calculate the total outflow from each bucket
-        total_outflow = torch.sum(s_q, dim=1)
-
-        print("H", H)
-        print("bucket_inflows", bucket_inflows)
-        print("total_outflow", total_outflow)
-
         # Update the head in each bucket
-        H_final = H + bucket_inflows - total_outflow
-#        H_final = torch.clamp(H_final, min=0)
-        
-        print("H_final", H_final)
-
+        H_final = H + bucket_inflows - bucket_outflows
         return H_final
 
     # ___________________________________________________
@@ -256,17 +242,26 @@ class NashCascadeNetwork(nn.Module):
         return torch.cat(padded_spigot_infos, dim=0)
 
     # ___________________________________________________
-    ## NETWORK INFLOW VALUES FOR THIS TIMESTEP
+    ## NETWORK INFLOW AND OUTFLOW VALUES FOR THIS TIMESTEP
     def update_network_fluxes(self, s_q):
-        # Initialize a tensor to store inflows for all buckets in the network
+
+        # Initialize tensors to store inflows and outflows for all buckets in the network
         total_buckets = sum(self.bpl)  # Total number of buckets in the network
         network_inflows = torch.zeros(total_buckets, dtype=torch.float32)
+        network_outflows = torch.zeros(total_buckets, dtype=torch.float32)
+
+        # Calculate inflows and outflows for each layer
+        # Sum the outflows of each bucket as the inflows for the next bucket
+        network_inflows[1:] = torch.sum(s_q[:-1], dim=1)
+
+        # Sum the outflows from the second bucket onwards as the network outflows
+        network_outflows = torch.sum(s_q, dim=1)
 
         # Calculate precipitation inflow and distribute it according to your network's logic
         precip_inflow = self.precip_into_network_at_update
         if self.precip_distribution == "upstream":
             # All precipitation goes into the top bucket of the first layer
-            network_inflows[0] = precip_inflow
+            network_inflows[0] += precip_inflow
         elif self.precip_distribution == "even":
             # Precipitation is evenly distributed among all layers
             precip_inflow_per_layer = precip_inflow / self.n_network_layers
@@ -275,21 +270,8 @@ class NashCascadeNetwork(nn.Module):
                 end = start + self.bpl[i]
                 network_inflows[start:end] += precip_inflow_per_layer / self.bpl[i]
 
-        # Calculate inflows from upstream layers
-        for ilayer in range(1, len(self.bpl)):
-            print("flux from layer", ilayer, self.network[ilayer - 1]["s_q"])
-            start_index = sum(self.bpl[:ilayer])
-            end_index = start_index + self.bpl[ilayer]
-            upstream_outflows = self.network[ilayer - 1]["s_q"]
+        return network_inflows, network_outflows
 
-            # Sum the outflows from each upstream bucket to get the inflow for each bucket in the current layer
-            for ibucket in range(self.bpl[ilayer]):
-                # Sum outflows from all upstream buckets to the current bucket
-                inflow_to_current_bucket = torch.sum(upstream_outflows[:, ibucket])
-                network_inflows[start_index + ibucket] = inflow_to_current_bucket
-
-        return network_inflows
-    
     # ___________________________________________________
     ## SET THE HEAD VALUES FOR ALL THE BUCKETS
     def set_network_head(self, H_updated):
@@ -304,11 +286,6 @@ class NashCascadeNetwork(nn.Module):
     # ___________________________________________________
     ## SET THE SPIGOT OUTFLOW VALUES IN THE NETOWORK
     def set_network_outflow(self, s_q):
-        print("\n In the function set_network_outflow")
-        print("Printout for debugging before the loop")
-        print("self.bpl", self.bpl)
-        print("s_q", s_q)
-        max_spigots_per_layer = s_q.shape[1]  # Maximum number of spigots per layer
 
         start_row = 0
         for ilayer in range(self.n_network_layers):
@@ -325,56 +302,9 @@ class NashCascadeNetwork(nn.Module):
             # Update the start row for the next layer
             start_row = end_row
 
-            # Printout for debugging
-            print(f"Layer {ilayer}: num_buckets={num_buckets}, num_spigots_this_layer={num_spigots_this_layer}")
-            print(f"Layer s_q: {layer_s_q}")
-
         # Calculate total outflow from the network
         last_layer_index = list(self.network.keys())[-1]
         self.network_outflow = torch.sum(self.network[last_layer_index]["s_q"])
-
-    # def set_network_outflow(self, s_q):
-    #     start = 0
-    #     cumulative_sum_s_q = 0
-    #     for ilayer in range(self.n_network_layers):
-    #         num_buckets = self.bpl[ilayer]
-    #         num_spigots_per_bucket = self.get_n_spigots_in_layer_buckets(ilayer)
-    #         total_layer_spigots = num_buckets * num_spigots_per_bucket
-
-    #         # Calculate the end index based on the total number of spigots in the layer
-    #         end = start + total_layer_spigots
-
-    #         s_q_slice = s_q[start:end]
-    #         print("s_q", s_q)
-    #         print("s_q.shape", s_q.shape)
-    #         print("s_q.flatten", s_q.flatten())
-    #         print(f"slice start: {start}, slice end: {end}")
-    #         print(f"Layer {ilayer}: Expected elements: {total_layer_spigots}, Actual elements: {s_q_slice.numel()}")
-    #         print(f"s_q_slice shape: {s_q_slice.shape}, Expected shape: [{num_buckets}, {num_spigots_per_bucket}]")
-
-    #         if s_q_slice.numel() != total_layer_spigots:
-    #             raise RuntimeError(f"Mismatch in total elements for layer {ilayer}")
-
-    #         reshaped_s_q = s_q_slice.view(num_buckets, num_spigots_per_bucket)
-    #         self.network[ilayer]["s_q"] = reshaped_s_q
-
-    #         start = end
-
-    #         # Update cumulative sum
-    #         cumulative_sum_s_q += torch.sum(reshaped_s_q)
-
-    #         # Debugging information
-    #         print(f"Layer {ilayer}: num_buckets={num_buckets}, num_spigots_per_bucket={num_spigots_per_bucket}")
-    #         print(f"s_q_slice shape: {s_q_slice.shape}, expected shape: [{num_buckets}, {num_spigots_per_bucket}]")
-
-    #     # Final check for the entire network
-    #     total_sum_s_q_network = sum(torch.sum(layer["s_q"]) for layer in self.network.values())
-    #     if not torch.isclose(cumulative_sum_s_q, total_sum_s_q_network, atol=1e-6):
-    #         raise RuntimeError("Mismatch in total outflow sum for the entire network")
-            
-    #     # Calculate total outflow from the network
-    #     last_layer_index = list(self.network.keys())[-1]  # Get the index of the last layer
-    #     self.network_outflow = torch.sum(self.network[last_layer_index]["s_q"])
 
     # ___________________________________________________
     ## UPDATE FUNCTION FOR ONE SINGLE TIME STEP
@@ -402,17 +332,16 @@ class NashCascadeNetwork(nn.Module):
 
         # Calculate spigot outflow for the entire network
         s_q = self.update_spigot_outflow(H, S, theta)
-        print(s_q)
 
         # Calculate bucket inflows for the entire network
-        bucket_inflows = self.update_network_fluxes(s_q)  # Method to calculate inflows for the entire network
+        bucket_inflows, bucket_outflows = self.update_network_fluxes(s_q)  # Method to calculate inflows for the entire network
 
         # Update head in buckets for the entire network
-        H_updated = self.update_head_in_buckets(H, s_q, bucket_inflows)
+        H_updated = self.update_head_in_buckets(H, bucket_inflows, bucket_outflows)
 
         # Update the network state
         self.set_network_head(H_updated)
-        
+
         self.set_network_outflow(s_q)
 
         self.summarize_network()
@@ -513,14 +442,6 @@ class NashCascadeNetwork(nn.Module):
         self.inital_mass_plus_precipitation = (self.inital_mass_in_network + self.precipitation_mass_into_network)
         self.mass_left_in_network_plus_mass_out = (self.current_mass_in_network + self.mass_out_of_netowork)
         self.mass_balance = self.inital_mass_plus_precipitation - self.mass_left_in_network_plus_mass_out
-
-        # Print mass balance information
-        print(f"Initial Mass in network: {self.inital_mass_in_network:.1f}")
-        print(f"Current in network: {self.current_mass_in_network:.1f}")
-        print(f"self.network_outflow: {self.network_outflow:.1f}")
-        print(f"Total Mass out of network: {self.mass_out_of_netowork:.1f}")
-        print(f"Total precipitation into network: {self.precipitation_mass_into_network:.1f}")
-        print(f"Mass balance for network is {self.mass_balance:.3f}")
 
     # ________________________________________________
     # Get the bucket heights into a single tensor

@@ -15,5 +15,5 @@
  "train_learning_rate": 0.1,
  "train_lr_step_size": 2,
  "train_lr_gamma": 0.95,
- "epochs": 2
+ "epochs": 20
 }
