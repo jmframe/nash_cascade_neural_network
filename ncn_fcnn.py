@@ -36,14 +36,16 @@ class NashCascadeNetwork(nn.Module):
         # GET VALUES FROM CONFIGURATION FILE.                      #
         self.config_from_json()
         self.initialize_up_bucket_network()
-        self.precip_into_network_at_update = torch.tensor(0.0, dtype=torch.float, requires_grad=True)
+#        self.precip_into_network_at_update = torch.tensor(0.0, dtype=torch.float, requires_grad=True)
+        self.precip_into_network_at_update = torch.tensor(0.0, dtype=torch.float, requires_grad=False)
         self.reset_volume_tracking()
         if self.do_predict_theta_with_fcnn:
             self.initialize_FCNN()
 
     def initialize_soft(self):
         self.initialize_up_bucket_network()
-        self.precip_into_network_at_update = torch.tensor(0.0, dtype=torch.float, requires_grad=True)
+#        self.precip_into_network_at_update = torch.tensor(0.0, dtype=torch.float, requires_grad=True)
+        self.precip_into_network_at_update = torch.tensor(0.0, dtype=torch.float, requires_grad=False)
         self.reset_volume_tracking()
 
     # ___________________________________________________
@@ -115,8 +117,8 @@ class NashCascadeNetwork(nn.Module):
     ## INITIAL HEAD LEVEL IN EACH BUCKET
     def initialize_bucket_head_level(self):
         for ilayer, n_buckets in enumerate(self.bpl):
-            H0_tensor = torch.tensor(self.initial_head_in_buckets, dtype=torch.float32, requires_grad=True)
-#            H0_tensor = torch.tensor(self.initial_head_in_buckets, dtype=torch.float32, requires_grad=False)
+#            H0_tensor = torch.tensor(self.initial_head_in_buckets, dtype=torch.float32, requires_grad=True)
+            H0_tensor = torch.tensor(self.initial_head_in_buckets, dtype=torch.float32, requires_grad=False)
             self.network[ilayer]["H"] = H0_tensor.repeat(n_buckets)
         self.summarize_network()
     
@@ -138,13 +140,13 @@ class NashCascadeNetwork(nn.Module):
             n_spigots = self.get_n_spigots_in_layer_buckets(ilayer)
 
             # Initialize tensor with shape [n_buckets, n_spigots, 2]
-            spigot_tensor = torch.rand((n_buckets, n_spigots, 2), requires_grad=True)
-#            spigot_tensor = torch.rand((n_buckets, n_spigots, 2), requires_grad=False)
+#            spigot_tensor = torch.rand((n_buckets, n_spigots, 2), requires_grad=True)
+            spigot_tensor = torch.rand((n_buckets, n_spigots, 2), requires_grad=False)
 
             bucket_network_dict[ilayer]["S"] = spigot_tensor
 
-            zeros_tensor = torch.zeros((n_buckets, n_spigots), requires_grad=True)
-#            zeros_tensor = torch.zeros((n_buckets, n_spigots), requires_grad=False)
+#            zeros_tensor = torch.zeros((n_buckets, n_spigots), requires_grad=True)
+            zeros_tensor = torch.zeros((n_buckets, n_spigots), requires_grad=False)
             bucket_network_dict[ilayer]["s_q"] = zeros_tensor
 
         if self.do_initialize_random_theta_values:
@@ -564,7 +566,7 @@ def train_model(model, u, y_true):
         print(f"theta: {model.theta}")
         model.check_fcnn_gradients(print_all_gradients=True)
 
-        model.detach_ncn_from_graph()
+#        model.detach_ncn_from_graph()
 
         scheduler.step()
 
@@ -607,8 +609,8 @@ if __name__ == "__main__":
     # Example 0
     bucket_net0 = NashCascadeNetwork(cfg_file="./config_0.json")
     bucket_net0.initialize()
-#    bucket_net0.set_value(PRECIP_RECORD, torch.tensor(network_precip_input_list, requires_grad=False))
-    bucket_net0.set_value(PRECIP_RECORD, torch.tensor(network_precip_input_list, requires_grad=True))
+    bucket_net0.set_value(PRECIP_RECORD, torch.tensor(network_precip_input_list, requires_grad=False))
+#    bucket_net0.set_value(PRECIP_RECORD, torch.tensor(network_precip_input_list, requires_grad=True))
     bucket_net0.summarize_network()
     inital_mass_in_network0 = torch.sum(torch.tensor([tensor.item() for tensor in bucket_net0.sum_H_per_layer]))
     network_outflow_tensor_0 = bucket_net0.forward()
@@ -621,8 +623,8 @@ if __name__ == "__main__":
     cfg_file="./config_1_fcnn.json"
     bucket_net1 = NashCascadeNetwork(cfg_file=cfg_file)
     bucket_net1.initialize()
-#    bucket_net1.set_value(PRECIP_RECORD, torch.tensor(network_precip_input_list, requires_grad=False))
-    bucket_net1.set_value(PRECIP_RECORD, torch.tensor(network_precip_input_list, requires_grad=True))
+    bucket_net1.set_value(PRECIP_RECORD, torch.tensor(network_precip_input_list, requires_grad=False))
+#    bucket_net1.set_value(PRECIP_RECORD, torch.tensor(network_precip_input_list, requires_grad=True))
     bucket_net1.unit_precip = unit_precip
     y_pred, loss = train_model(bucket_net1, network_precip_tensor.detach(), network_outflow_tensor_0.detach())
     bucket_net1.report_out_mass_balance()
