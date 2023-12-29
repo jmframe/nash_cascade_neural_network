@@ -7,13 +7,13 @@
     2,
     1
   ],
- "range_of_theta_values": [0.1, 0.4],
+ "range_of_theta_values": [0.2, 0.9],
  "precip_distribution": "upstream",
  "do_predict_theta_with_fcnn": "True",
  "do_initialize_random_theta_values": "True",
  "seed": 1,
- "train_learning_rate": 0.001,
- "train_lr_step_size": 2,
- "train_lr_gamma": 0.95,
+ "train_learning_rate": 1e-9,
+ "train_lr_step_size": 1,
+ "train_lr_gamma": 0.99,
  "epochs": 200
 }
