@@ -42,23 +42,25 @@ class NashCascadeNetwork(nn.Module):
             self.initialize_FCNN()
 
     def initialize_soft(self):
-        self.initialize_up_bucket_network()
+        self.initialize_bucket_head_level()
         self.precip_into_network_at_update = torch.tensor(0.0, dtype=torch.float, requires_grad=False)
         self.reset_volume_tracking()
 
     # ___________________________________________________
     ## INITIALIZE THE FCNN
     def initialize_FCNN(self):
-        H_tensor = self.get_the_H_tensor(normalize=False)
-        input_size = H_tensor.numel() + 1  # Size of H_tensor plus one for u
+        H_tensor = self.get_the_H_tensor(normalize=True)
+        input_size = H_tensor.numel() 
 
-        hidden_size = 4  # Example hidden size, adjust as needed
+        hidden_size = 8  # Example hidden size, adjust as needed
         output_size = self.theta.numel()  # Output size should match the number of theta values
 
         self.fc1 = nn.Linear(input_size, hidden_size)
-        self.sigmoid1 = nn.Sigmoid()
-        self.fc2 = nn.Linear(hidden_size, output_size)
-        self.sigmoid2 = nn.Sigmoid()
+        self.activation1 = nn.Tanh()
+        self.fc2 = nn.Linear(hidden_size, hidden_size)
+        self.activation2 = nn.Tanh()
+        self.fc3 = nn.Linear(hidden_size, output_size)
+        self.sigmoid = nn.Sigmoid()
 
     # ___________________________________________________
     ## CONFIGURATIONS read in from json file
@@ -110,7 +112,10 @@ class NashCascadeNetwork(nn.Module):
 
         # Convert the list to a 1D tensor
         self.theta = torch.tensor(values_list, requires_grad=True)
-
+        print("--------------\n-----------\n-------------\n")
+        print("INITIAL THETA VALUES")
+        print(self.theta)
+        print("--------------\n-----------\n-------------\n")
     # ___________________________________________________
     ## INITIAL HEAD LEVEL IN EACH BUCKET
     def initialize_bucket_head_level(self):
@@ -173,12 +178,12 @@ class NashCascadeNetwork(nn.Module):
     def prepare_fcnn_inputs(self):
         # Get the current state of the buckets
         H_tensor = self.get_the_H_tensor(normalize=True)
-        # Normalize the current precipitation input
-        u_current = self.precip_into_network_at_update / self.unit_precip
-        u_current = u_current.view(-1)  # Ensure it is a 1D tensor
-        # Concatenate the current state and precipitation input
-        fcnn_input = torch.cat((H_tensor, u_current), dim=0)
-        return fcnn_input
+        # # Normalize the current precipitation input
+        # u_current = self.precip_into_network_at_update / self.unit_precip
+        # u_current = u_current.view(-1)  # Ensure it is a 1D tensor
+        # # Concatenate the current state and precipitation input
+        # fcnn_input = torch.cat((u_current, H_tensor), dim=0)
+        return H_tensor
 
     # ___________________________________________________
     ## UPDATE THE SPIGOT OUTFLOW FOR A SINGLE TIMESTEP
@@ -324,9 +329,11 @@ class NashCascadeNetwork(nn.Module):
             fc_input = fc_input.view(-1)  # Flatten the input
             # Pass through fully connected layers
             fc_output = self.fc1(fc_input)
-            fc_output = self.sigmoid1(fc_output)  # Apply activation function
+            fc_output = self.activation1(fc_output)  # Apply activation function
             fc_output = self.fc2(fc_output)
-            fc_output = self.sigmoid2(fc_output)  # Apply activation function
+            fc_output = self.activation2(fc_output)
+            fc_output = self.fc3(fc_output)
+            fc_output = self.sigmoid(fc_output)  # Apply activation function
             # Update theta
             self.theta = fc_output  # take the last timestep
             fc_output.retain_grad()
@@ -452,13 +459,13 @@ class NashCascadeNetwork(nn.Module):
 
     # ________________________________________________
     # Get the bucket heights into a single tensor
-    def get_the_H_tensor(self, normalize=False):
+    def get_the_H_tensor(self, normalize=True):
         H_list = []
         for i in list(self.network.keys()):
             H_list.extend(list(self.network[i]['H']))
         H_tensor = torch.tensor(H_list)
         if normalize:
-            H_tensor = H_tensor / 10.0
+            H_tensor = H_tensor / self.initial_head_in_buckets
         return H_tensor
 
     # ________________________________________________
@@ -531,15 +538,13 @@ def train_model(model, u, y_true):
     # Instantiate the loss function
     criterion = nn.MSELoss()
     # Collect all parameters from the fully connected layers for optimization
-    fc_params = list(model.fc1.parameters()) + list(model.fc2.parameters())
+    fc_params = list(model.fc1.parameters()) + list(model.fc2.parameters()) + list(model.fc3.parameters())
     # Create the optimizer instance with the combined parameter list
     optimizer = optim.Adam(fc_params, lr=model.train_learning_rate)
 
     scheduler = StepLR(optimizer, step_size=model.train_lr_step_size, gamma=model.train_lr_gamma, verbose=True)
 
     for epoch in range(model.epochs):
-
-#        model.initialize_up_bucket_network()
 
         optimizer.zero_grad()
 
@@ -554,8 +559,7 @@ def train_model(model, u, y_true):
 
         optimizer.step() # update the parameters, just like w -= learning_rate * w.grad
 
-        print(f"loss: {loss:.4f}------------")
-        print(f"theta: {model.theta}")
+        print(f"{loss:.4f}:loss  ----- Training EPOCH {epoch} --- theta: {model.theta}")
         model.check_fcnn_gradients(print_all_gradients=False)
 
         scheduler.step()
