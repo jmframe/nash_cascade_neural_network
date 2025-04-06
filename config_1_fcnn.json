@@ -12,8 +12,9 @@
  "do_predict_theta_with_fcnn": "True",
  "do_initialize_random_theta_values": "True",
  "seed": 1,
- "train_learning_rate": 1e-2,
+ "train_learning_rate": 1e-1,
  "train_lr_step_size": 1,
  "train_lr_gamma": 0.96,
- "epochs": 2
+ "epochs": 100,
+ "fcnn_hidden_size": 16
 }

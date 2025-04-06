@@ -7,7 +7,7 @@
     2,
     1
   ],
- "range_of_theta_values": [0.2, 0.3],
+ "range_of_theta_values": [0.5, 0.6],
  "precip_distribution": "upstream",
  "do_predict_theta_with_lstm": "False",
  "do_predict_theta_with_fcnn": "False",
