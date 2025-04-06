@@ -1,4 +1,4 @@
-#!/bin/python3
+#/home/jonat/anaconda3/envs/nhgpu/bin/python3
 # Nash Cascade  Network
 # A hydrologically intuitive deep network
 
@@ -52,7 +52,7 @@ class NashCascadeNetwork(nn.Module):
         H_tensor = self.get_the_H_tensor(normalize=True)
         input_size = H_tensor.numel() 
 
-        hidden_size = 8  # Example hidden size, adjust as needed
+        hidden_size = self.fcnn_hidden_size  
         output_size = self.theta.numel()  # Output size should match the number of theta values
 
         self.fc1 = nn.Linear(input_size, hidden_size)
@@ -95,6 +95,7 @@ class NashCascadeNetwork(nn.Module):
             self.train_lr_step_size = cfg_loaded['train_lr_step_size']
             self.train_lr_gamma = cfg_loaded['train_lr_gamma']
             self.epochs = cfg_loaded['epochs']
+            self.fcnn_hidden_size = cfg_loaded['fcnn_hidden_size']
 
     # ___________________________________________________
     ## PARAMETER INITIALIZATION
