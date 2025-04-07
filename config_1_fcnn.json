@@ -1,13 +1,15 @@
 {
   "model_type": "NCNN",
   "verbose": "False",
-  "initial_head_in_buckets": 5, 
+  "initial_head_in_buckets": 1, 
   "bpl": [
+    1,
+    2,
     1,
     2,
     1
   ],
- "range_of_theta_values": [0.99, 0.999],
+ "range_of_theta_values": [0.2, 0.999],
  "precip_distribution": "upstream",
  "do_predict_theta_with_fcnn": "True",
  "do_initialize_random_theta_values": "True",
@@ -15,7 +17,7 @@
  "train_learning_rate": 1e-1,
  "train_lr_step_size": 1,
  "train_lr_gamma": 0.96,
- "epochs": 100,
+ "epochs": 10,
  "fcnn_hidden_size": 16,
  "device": "cpu"
 }
