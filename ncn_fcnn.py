@@ -97,6 +97,16 @@ class NashCascadeNetwork(nn.Module):
             self.epochs = cfg_loaded['epochs']
             self.fcnn_hidden_size = cfg_loaded['fcnn_hidden_size']
 
+        # Set the device based on the config file
+        device_str = cfg_loaded.get('device', 'cpu').lower()
+        if device_str == "cuda" and torch.cuda.is_available():
+            self.device = torch.device("cuda")
+        elif device_str == "mps" and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            self.device = torch.device("mps")
+        else:
+            self.device = torch.device("cpu")
+            
+        print("Using device:", self.device)
     # ___________________________________________________
     ## PARAMETER INITIALIZATION
     def initialize_theta_values(self):
@@ -189,9 +199,14 @@ class NashCascadeNetwork(nn.Module):
     # ___________________________________________________
     ## UPDATE THE SPIGOT OUTFLOW FOR A SINGLE TIMESTEP
     def update_spigot_outflow(self, H, S, theta):
-        # Create a tensor to hold the theta values for each spigot
+        # Ensure all inputs are on the correct device
+        H = H.to(self.device)
+        S = S.to(self.device)
+        theta = theta.to(self.device)
+        
+        # Create a tensor to hold the theta values for each spigot (will be on self.device)
         theta_for_spigots = torch.zeros_like(S[:, :, 0])
-
+        
         # Populate theta_for_spigots with the correct theta values
         theta_index = 0
         for ilayer in range(self.n_network_layers):
@@ -201,26 +216,23 @@ class NashCascadeNetwork(nn.Module):
                     theta_for_spigots[sum(self.bpl[:ilayer]) + ibucket, ispigot] = theta[theta_index]
                     theta_index += 1
 
-        # Calculate the head over the spigot for each bucket
-        # Ensure h is non-negative and broadcastable with theta_for_spigots
-        # Subtract spigot height from H and ensure the result is non-negative
+        # Calculate the head over the spigot for each bucket:
+        # Ensure h is non-negative and broadcastable with theta_for_spigots.
+        # Subtract spigot height from H and ensure the result is non-negative.
         h = torch.max(torch.zeros_like(S[:, :, 0]), H.unsqueeze(1) - S[:, :, 0])
-
+        
         # Calculate the maximum possible flow rate
         max_flow_rate = h * S[:, :, 1]
-
-        # Calculate the flow rate
+        
+        # Calculate the flow rate using the energy principle (with gravitational acceleration self.G)
         flow_rate = theta_for_spigots * torch.sqrt(2 * self.G * h)
-
-        # Calculate the scaling factor
+        
+        # Calculate the scaling factor using a sigmoid function
         scale = torch.sigmoid(max_flow_rate - flow_rate)
-
-        # Scale the flow rate
-        scaled_flow_rate = flow_rate * scale
-
-        # Calculate flow out
-        flow_out = scaled_flow_rate * S[:, :, 1]
-
+        
+        # Scale the flow rate to compute the actual flow out
+        flow_out = scaled_flow_rate = flow_rate * scale * S[:, :, 1]
+        
         return flow_out
 
     # ___________________________________________________
@@ -238,9 +250,9 @@ class NashCascadeNetwork(nn.Module):
     # ___________________________________________________
     ## GET THE HEAD VALUES FOR EACH BUCKET
     def get_network_head(self):
-        # Assuming self.network is a dictionary where each layer's head is stored
-        heads = [self.network[layer]["H"] for layer in self.network]
-        return torch.cat(heads, dim=0)  # Concatenate heads from all layers
+        # Ensure each head tensor is on self.device
+        heads = [self.network[layer]["H"].to(self.device) for layer in self.network]
+        return torch.cat(heads, dim=0)
     
     # ___________________________________________________
     ## GET THE SPIGOT INFORMATION
@@ -257,28 +269,33 @@ class NashCascadeNetwork(nn.Module):
     # ___________________________________________________
     ## NETWORK INFLOW AND OUTFLOW VALUES FOR THIS TIMESTEP
     def update_network_fluxes(self, s_q):
+        # Ensure the input tensor is on the correct device
+        s_q = s_q.to(self.device)
 
-        # Initialize tensors to store inflows and outflows for all buckets in the network
         total_buckets = sum(self.bpl)  # Total number of buckets in the network
-        network_inflows = torch.zeros(total_buckets, dtype=torch.float32)
-        network_outflows = torch.zeros(total_buckets, dtype=torch.float32)
 
-        # Calculate inflows and outflows for each layer
-        # Sum the outflows of each bucket as the inflows for the next bucket
+        # Create tensors on self.device
+        network_inflows = torch.zeros(total_buckets, dtype=torch.float32, device=self.device)
+        network_outflows = torch.zeros(total_buckets, dtype=torch.float32, device=self.device)
+
+        # Sum the outflows of each bucket (except the first) as the inflows for the next bucket
         network_inflows[1:] = torch.sum(s_q[:-1], dim=1)
 
-        # Sum the outflows from the second bucket onwards as the network outflows
+        # Compute network outflows as the sum of s_q along dim=1 (s_q is already on self.device)
         network_outflows = torch.sum(s_q, dim=1)
 
-        # Calculate precipitation inflow and distribute it according to your network's logic
-        precip_inflow = self.precip_into_network_at_update
+        # Ensure the precipitation inflow is on the correct device
+        precip_inflow = self.precip_into_network_at_update.to(self.device)
+
+        # Distribute precipitation inflow according to the network logic
         if self.precip_distribution == "upstream":
             # All precipitation goes into the top bucket of the first layer
             network_inflows[0] += precip_inflow
         elif self.precip_distribution == "even":
             # Precipitation is evenly distributed among all layers
             precip_inflow_per_layer = precip_inflow / self.n_network_layers
-            layer_starts = torch.cumsum(torch.tensor([0] + self.bpl[:-1]), 0)
+            # Create the layer_starts tensor on self.device
+            layer_starts = torch.cumsum(torch.tensor([0] + self.bpl[:-1], device=self.device), 0)
             for i, start in enumerate(layer_starts):
                 end = start + self.bpl[i]
                 network_inflows[start:end] += precip_inflow_per_layer / self.bpl[i]
@@ -464,7 +481,7 @@ class NashCascadeNetwork(nn.Module):
         H_list = []
         for i in list(self.network.keys()):
             H_list.extend(list(self.network[i]['H']))
-        H_tensor = torch.tensor(H_list)
+        H_tensor = torch.tensor(H_list, device=self.device)
         if normalize:
             H_tensor = H_tensor / self.initial_head_in_buckets
         return H_tensor
@@ -515,7 +532,7 @@ class NashCascadeNetwork(nn.Module):
             num_non_zero_grads = torch.sum(non_zero_grads).item()
             # Get the indices of non-zero gradients
             indices = torch.nonzero(non_zero_grads).squeeze()
-            print(f"Num non-zero gadients: {num_non_zero_grads}, incices: {indices.tolist()}, gradients: {self.fc_output.grad[indices]}")
+            print(f"Num non-zero gadients: {num_non_zero_grads}, indices: {indices.tolist()}, gradients: {self.fc_output.grad[indices]}")
         else:
             print("No gradients computed (grad is None).")
 
@@ -528,8 +545,11 @@ def train_model(model, u, y_true):
             model (ncnn): NashCascadeNeuralNetwork
             u (tensor): precipitation input
             y_true (tensor): true predictions
-
     """
+    # Ensure input tensors are on the model's device
+    u = u.to(model.device)
+    y_true = y_true.to(model.device)
+
     print(f"INITIAL MODEL theta: {model.theta}")
 
     model.set_value(PRECIP_RECORD, u.clone().detach())
@@ -552,13 +572,13 @@ def train_model(model, u, y_true):
         # FORWARD PASS OF THE MODEL
         y_pred = model.forward()
 
-        start_criterion = int(y_pred.shape[0]/2)
+        start_criterion = int(y_pred.shape[0] / 2)
         loss = criterion(y_pred[start_criterion:], y_true[start_criterion:])
 
-        #with torch.autograd.set_detect_anomaly(True):
-        loss.backward() # run backpropagation
+        # Run backpropagation
+        loss.backward()
 
-        optimizer.step() # update the parameters, just like w -= learning_rate * w.grad
+        optimizer.step()  # update the parameters
 
         print(f"{loss:.4f}:loss  ----- Training EPOCH {epoch} --- theta: {model.theta}")
         model.check_fcnn_gradients(print_all_gradients=False)
@@ -567,9 +587,9 @@ def train_model(model, u, y_true):
 
         model.initialize_soft()
 
-    # FORWARD PASS OF THE MODEL
+    # Final forward pass of the model after training
     y_pred = model.forward()
-    start_criterion = int(y_pred.shape[0]/2)
+    start_criterion = int(y_pred.shape[0] / 2)
     loss = criterion(y_pred[start_criterion:], y_true[start_criterion:])
 
     return y_pred, loss
